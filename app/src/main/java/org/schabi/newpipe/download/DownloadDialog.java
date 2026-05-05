@@ -323,8 +323,9 @@ public class DownloadDialog extends DialogFragment
         super.onViewCreated(view, savedInstanceState);
         dialogBinding = DownloadDialogBinding.bind(view);
 
-        dialogBinding.fileName.setText(FilenameUtils.createFilename(getContext(),
-                currentInfo.getName()));
+        prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
+        final String template = prefs.getString(getString(R.string.download_filename_template_key), getString(R.string.download_filename_template_default_value));
+        dialogBinding.fileName.setText(FilenameUtils.buildFilename(template, currentInfo));
         selectedAudioIndex = ListHelper
                 .getDefaultAudioFormat(getContext(), wrappedAudioStreams.getStreamsList());
 
@@ -337,8 +338,7 @@ public class DownloadDialog extends DialogFragment
         initToolbar(dialogBinding.toolbarLayout.toolbar);
         setupDownloadOptions();
 
-        prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-
+        
         final int threads = prefs.getInt(getString(R.string.default_download_threads), 3);
         dialogBinding.threadsCount.setText(String.valueOf(threads));
         dialogBinding.threads.setProgress(threads - 1);
@@ -602,7 +602,8 @@ public class DownloadDialog extends DialogFragment
     }
 
     private void onItemSelectedSetFileName() {
-        final String fileName = FilenameUtils.createFilename(getContext(), currentInfo.getName());
+        final String template = prefs.getString(getString(R.string.download_filename_template_key), getString(R.string.download_filename_template_default_value));
+        final String fileName = FilenameUtils.buildFilename(template, currentInfo);
         final String prevFileName = Optional.ofNullable(dialogBinding.fileName.getText())
                 .map(Object::toString)
                 .orElse("");
@@ -714,7 +715,11 @@ public class DownloadDialog extends DialogFragment
     private String getNameEditText() {
         final String str = dialogBinding.fileName.getText().toString();
 
-        return FilenameUtils.createFilename(context, str.isEmpty() ? currentInfo.getName() : str);
+        if (str.isEmpty()) {
+            final String template = prefs.getString(getString(R.string.download_filename_template_key), getString(R.string.download_filename_template_default_value));
+            return FilenameUtils.buildFilename(template, currentInfo);
+        }
+        return FilenameUtils.createFilename(context, str);
     }
 
     private void showFailedDialog(@StringRes final int msg) {
@@ -889,6 +894,16 @@ public class DownloadDialog extends DialogFragment
                     continueSelectedDownload(storage);
                     return;
                 } else if (targetFile == null) {
+                    // Double-check: SAF findFile() can miss existing files (especially on Bilibili).
+                    // Ask the user to confirm overwrite if the file actually exists.
+                    if (mainStorage.fileExists(filename)) {
+                        // file exists on disk but wasn't caught by findFile() — fall through to overwrite dialog
+                        msgBtn = R.string.overwrite;
+                        msgBody = R.string.overwrite_unrelated_warning;
+                        // do NOT return — let execution continue to the AlertDialog builder below
+                        break; // break out of switch, fall through to dialog
+                    }
+
                     // This part is called if:
                     // * the filename is not used in a pending/finished download
                     // * the file does not exists, create
@@ -905,6 +920,8 @@ public class DownloadDialog extends DialogFragment
                     }
 
                     continueSelectedDownload(storage);
+                    // Note: This Bilibili sidecar creation must execute for both the new-file path
+                    // AND the overwrite-confirmed path below to ensure temp files are properly handled.
                     if(currentInfo.getService() == ServiceList.BiliBili && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button){
                         mainStorage.createFile(filename.replace(".mp4", ".tmp.mp4"), "video/mp4");
                         mainStorage.createFile(filename.replace(".mp4", ".tmp"), String.valueOf(MediaFormat.M4A));
@@ -968,6 +985,8 @@ public class DownloadDialog extends DialogFragment
 
                     if (storageNew != null && storageNew.canWrite()) {
 //                        mainStorage.remove(filename);
+                        // Note: This Bilibili sidecar creation must execute for both the new-file path
+                        // AND the overwrite-confirmed path to ensure temp files are properly handled.
                         if(currentInfo.getService() == ServiceList.BiliBili && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button){
                             mainStorage.createFile(filename.replace(".mp4", ".tmp.mp4"), "video/mp4");
                             mainStorage.createFile(filename.replace(".mp4", ".tmp"), String.valueOf(MediaFormat.M4A));
