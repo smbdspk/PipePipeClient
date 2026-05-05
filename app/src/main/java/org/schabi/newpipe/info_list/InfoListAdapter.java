@@ -99,6 +99,23 @@ public class InfoListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolde
 
     private Supplier<View> headerSupplier = null;
 
+    /**
+     * Optional provider queried during bind to determine whether an item is selected
+     * in multi-select / bulk-download mode. Null means multi-select is inactive.
+     */
+    @Nullable
+    private SelectionStateProvider selectionStateProvider = null;
+
+    /** Implement to drive the selection-overlay checkboxes on stream items. */
+    public interface SelectionStateProvider {
+        boolean isSelected(InfoItem item);
+    }
+
+    public void setSelectionStateProvider(@Nullable final SelectionStateProvider provider) {
+        this.selectionStateProvider = provider;
+        notifyDataSetChanged();
+    }
+
     public InfoListAdapter(final Context context) {
         layoutInflater = LayoutInflater.from(context);
         recordManager = new HistoryRecordManager(context);
@@ -358,9 +375,21 @@ public class InfoListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolde
                     + "position = [" + position + "]");
         }
         if (holder instanceof InfoItemHolder) {
-            ((InfoItemHolder) holder).updateFromItem(
-                    // If header is present, offset the items by -1
-                    infoItemList.get(hasHeader() ? position - 1 : position), recordManager);
+            final InfoItem item = infoItemList.get(hasHeader() ? position - 1 : position);
+            ((InfoItemHolder) holder).updateFromItem(item, recordManager);
+
+            // Show/hide the selection overlay for multi-select bulk-download mode.
+            if (holder instanceof org.schabi.newpipe.info_list.holder.StreamInfoItemHolder) {
+                final org.schabi.newpipe.info_list.holder.StreamInfoItemHolder streamHolder =
+                        (org.schabi.newpipe.info_list.holder.StreamInfoItemHolder) holder;
+                if (streamHolder.itemSelectedOverlay != null) {
+                    final boolean selected = selectionStateProvider != null
+                            && selectionStateProvider.isSelected(item);
+                    streamHolder.itemSelectedOverlay.setChecked(selected);
+                    streamHolder.itemSelectedOverlay.setVisibility(
+                            selectionStateProvider != null ? View.VISIBLE : View.GONE);
+                }
+            }
         }
     }
 

@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
@@ -7,4 +8,35 @@
         android:title="@string/sort"
         android:visible="false"
         app:showAsAction="ifRoom" />
+
+    <!-- Normal mode: shown when list has loaded items -->
+    <item
+        android:id="@+id/menu_item_select_videos"
+        android:icon="@drawable/ic_select_all"
+        android:title="@string/select_videos"
+        android:visible="false"
+        app:showAsAction="ifRoom" />
+
+    <!-- Multi-select mode: hidden in normal mode, shown when isMultiSelectMode=true -->
+    <item
+        android:id="@+id/menu_item_select_all"
+        android:title="@string/select_all"
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_item_download_selected"
+        android:enabled="false"
+        android:icon="@drawable/ic_file_download"
+        android:title="@string/download"
+        android:visible="false"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/menu_item_cancel_select"
+        android:icon="@drawable/ic_close"
+        android:title="@string/cancel"
+        android:visible="false"
+        app:showAsAction="ifRoom" />
+
 </menu>
