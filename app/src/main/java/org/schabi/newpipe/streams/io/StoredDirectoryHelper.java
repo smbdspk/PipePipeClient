@@ -216,6 +216,13 @@ public class StoredDirectoryHelper {
         return (res == null || res.length() > 0) ? null : res.getUri();
     }
 
+    public boolean fileExists(final String filename) {
+        if (docTree != null) {
+            return findFileSAFHelper(context, docTree, filename) != null;
+        }
+        return new File(ioTree, filename).exists();
+    }
+
     /**
      * Checks if a file with the given base name exists (regardless of extension) and has non-zero length.
      *

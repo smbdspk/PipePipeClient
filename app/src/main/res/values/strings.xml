@@ -324,6 +324,9 @@
 <string name="recaptcha_done_button">Done</string>
 <!-- Downloads -->
 <string name="settings_category_downloads_title">Download</string>
+<string name="download_filename_template_title">Filename template</string>
+<string name="download_filename_template_summary">Customize the download filename. Available tokens: {title}, {channel}, {date}, {date_short}, {id}</string>
+<string name="download_filename_template_default_value">{title}</string>
 <string name="settings_file_charset_title">Allowed characters in filenames</string>
 <string name="charset_letters_and_digits">Letters and digits</string>
 <string name="charset_most_special_characters">Most special characters</string>
