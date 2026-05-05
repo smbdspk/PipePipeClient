@@ -986,7 +986,8 @@ public class DownloadDialog extends DialogFragment
             askDialog.create().show();
             return;
         }
-        askDialog.setPositiveButton(msgBtn, (dialog, which) -> {
+
+        DialogInterface.OnClickListener actionListener = (dialog, which) -> {
             dialog.dismiss();
 
             StoredFileHelper storageNew;
@@ -1031,7 +1032,26 @@ public class DownloadDialog extends DialogFragment
                     }
                     break;
             }
-        });
+        };
+
+        if (state == MissionState.None) {
+            // Move Cancel to the Neutral position (far left)
+            askDialog.setNeutralButton(R.string.cancel, null);
+            // Override the default Negative button to be Overwrite (middle)
+            askDialog.setNegativeButton(msgBtn, actionListener);
+            // Set Generate unique name to the Positive position (far right)
+            askDialog.setPositiveButton(R.string.generate_unique_name, (dialog, which) -> {
+                dialog.dismiss();
+                final StoredFileHelper storageNew = mainStorage.createUniqueFile(filename, mime);
+                if (storageNew == null) {
+                    showFailedDialog(R.string.error_file_creation);
+                } else {
+                    continueSelectedDownload(storageNew);
+                }
+            });
+        } else {
+            askDialog.setPositiveButton(msgBtn, actionListener);
+        }
         askDialog.create().show();
     }
 

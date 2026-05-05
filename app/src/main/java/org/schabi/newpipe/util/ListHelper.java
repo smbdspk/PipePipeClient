@@ -51,6 +51,35 @@ public final class ListHelper {
     }
 
     /**
+     * Resolves a video stream index from the fixed quality labels used by
+     * {@link org.schabi.newpipe.download.BulkDownloadDialog}.
+     * <ul>
+     *   <li>"Best" → highest available stream (uses user pref defaults)</li>
+     *   <li>Any other label (e.g. "720p") → exact match first, then highest stream strictly
+     *       below the requested resolution as the fallback</li>
+     * </ul>
+     *
+     * @param context      Android context (used for "Best" resolution lookup)
+     * @param qualityLabel one of "Best", "1080p", "720p", "480p", "360p", "240p"
+     * @param videoStreams the already-filtered and sorted list of available video streams
+     * @return the index into {@code videoStreams}, or -1 if the list is empty
+     */
+    public static int getDownloadResolutionIndex(@NonNull final Context context,
+                                                 @NonNull final String qualityLabel,
+                                                 @Nullable final List<VideoStream> videoStreams) {
+        if (videoStreams == null || videoStreams.isEmpty()) {
+            return -1;
+        }
+        final String bestKey = context.getString(R.string.best_resolution_key);
+        if ("Best".equals(qualityLabel)) {
+            return getDefaultResolutionIndex(context, videoStreams);
+        }
+        // Delegates to the package-private overload which has the fallback-to-lower logic.
+        return getDefaultResolutionIndex(qualityLabel, bestKey, null, videoStreams);
+    }
+
+
+    /**
      * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
      * @param context           Android app context
      * @param videoStreams      list of the video streams to check
@@ -693,7 +722,7 @@ public final class ListHelper {
      * @param audioStreams List of audio streams
      * @return Index of audio stream that produces the most compact results or -1 if not found
      */
-    static int getHighestQualityAudioIndex(@Nullable final MediaFormat format,
+    public static int getHighestQualityAudioIndex(@Nullable final MediaFormat format,
                                            @Nullable final List<AudioStream> audioStreams) {
         return getAudioIndexByHighestRank(format, audioStreams,
                 // Compares descending (last = highest rank)

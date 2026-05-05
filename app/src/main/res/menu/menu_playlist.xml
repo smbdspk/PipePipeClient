@@ -34,4 +34,34 @@
         android:orderInCategory="3"
         android:title="@string/add_to_playlist"
         app:showAsAction="never" />
+
+    <!-- Multi-select bulk download items -->
+    <item
+        android:id="@+id/menu_item_select_videos"
+        android:icon="@drawable/ic_select_all"
+        android:title="@string/select_videos"
+        android:visible="false"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/menu_item_select_all"
+        android:title="@string/select_all"
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_item_download_selected"
+        android:enabled="false"
+        android:icon="@drawable/ic_file_download"
+        android:title="@string/download"
+        android:visible="false"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/menu_item_cancel_select"
+        android:icon="@drawable/ic_close"
+        android:title="@string/cancel"
+        android:visible="false"
+        app:showAsAction="ifRoom" />
+
 </menu>

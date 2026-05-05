@@ -3,6 +3,7 @@ package org.schabi.newpipe.info_list.holder;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.CheckBox;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -56,6 +57,8 @@ public class StreamInfoItemHolder extends InfoItemHolder {
     public final TextView itemDurationView;
     private final AnimatedProgressBar itemProgressView;
     public final TextView itemAdditionalDetails;
+    /** Selection checkbox shown in multi-select / bulk-download mode. Gone by default. */
+    public final CheckBox itemSelectedOverlay;
 
     public StreamInfoItemHolder(final InfoItemBuilder infoItemBuilder, final ViewGroup parent) {
         this(infoItemBuilder, R.layout.list_stream_item, parent);
@@ -70,6 +73,7 @@ public class StreamInfoItemHolder extends InfoItemHolder {
         itemDurationView = itemView.findViewById(R.id.itemDurationView);
         itemProgressView = itemView.findViewById(R.id.itemProgressView);
         itemAdditionalDetails = itemView.findViewById(R.id.itemAdditionalDetails);
+        itemSelectedOverlay = itemView.findViewById(R.id.itemSelectedOverlay);
     }
 
     @Override

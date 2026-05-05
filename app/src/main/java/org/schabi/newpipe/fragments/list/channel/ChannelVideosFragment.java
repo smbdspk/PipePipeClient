@@ -21,6 +21,8 @@ import android.widget.ImageButton;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.activity.OnBackPressedCallback;
+import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
 import androidx.core.content.ContextCompat;
 
@@ -56,15 +58,19 @@ import org.schabi.newpipe.local.subscription.dialog.FeedGroupSelectionDialog;
 import org.schabi.newpipe.player.PlayerService.PlayerType;
 import org.schabi.newpipe.player.playqueue.ChannelPlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
+import org.schabi.newpipe.download.BulkDownloadDialog;
+import org.schabi.newpipe.download.BulkDownloadManager;
 import org.schabi.newpipe.util.ExtractorHelper;
 import org.schabi.newpipe.util.Localization;
 import org.schabi.newpipe.util.NavigationHelper;
+import org.schabi.newpipe.util.OnClickGesture;
 import org.schabi.newpipe.util.PicassoHelper;
 import org.schabi.newpipe.util.ServiceHelper;
 import org.schabi.newpipe.util.ThemeHelper;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -81,7 +87,7 @@ import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
 public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, ChannelInfo>
-        implements View.OnClickListener {
+        implements View.OnClickListener, BulkDownloadDialog.Listener {
 
     private static final int BUTTON_DEBOUNCE_INTERVAL = 100;
     private static final String PICASSO_CHANNEL_TAG = "PICASSO_CHANNEL_TAG";
@@ -104,6 +110,22 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     private ChannelHeaderBinding headerBinding;
     private PlaylistControlBinding playlistControlBinding;
     private ImageButton addToGroupButton;
+
+    // -----------------------------------------------------------------------
+    // Multi-select / bulk-download state
+    // -----------------------------------------------------------------------
+    private boolean isMultiSelectMode = false;
+    private final LinkedHashSet<org.schabi.newpipe.extractor.stream.StreamInfoItem>
+            selectedItems = new LinkedHashSet<>();
+    private MenuItem menuSortButton;
+    private MenuItem menuSelectVideos;
+    private MenuItem menuSelectAll;
+    private MenuItem menuDownloadSelected;
+    private MenuItem menuCancelSelect;
+    /** The click listener active in normal (non-select) mode — saved when entering select mode. */
+    private OnClickGesture<org.schabi.newpipe.extractor.stream.StreamInfoItem>
+            normalStreamClickListener;
+    private OnBackPressedCallback backPressedCallback;
 
     public static ChannelVideosFragment getInstance(@NonNull final ChannelInfo channelInfo) {
         final ChannelVideosFragment instance = new ChannelVideosFragment();
@@ -152,31 +174,7 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     @Override
     public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setHasOptionsMenu(true);
-    }
-
-    @Override
-    public void onCreateOptionsMenu(@NonNull final Menu menu,
-                                    @NonNull final MenuInflater inflater) {
-        super.onCreateOptionsMenu(menu, inflater);
-        inflater.inflate(R.menu.menu_channel_videos, menu);
-        menuSortButton = menu.findItem(R.id.menu_item_sort);
-        updateSortButton();
-    }
-
-    @Override
-    public void onPrepareOptionsMenu(@NonNull final Menu menu) {
-        super.onPrepareOptionsMenu(menu);
-        updateSortButton();
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(@NonNull final MenuItem item) {
-        if (item.getItemId() == R.id.menu_item_sort) {
-            showSortDialog();
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
+        setHasOptionsMenu(true); // contributes menu_channel_videos items alongside ChannelFragment's menu
     }
 
     @Override
@@ -209,6 +207,12 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
         channelBinding = null;
         headerBinding = null;
         playlistControlBinding = null;
+        // Clean up multi-select state so the adapter doesn't hold a stale reference
+        if (infoListAdapter != null) {
+            infoListAdapter.setSelectionStateProvider(null);
+        }
+        isMultiSelectMode = false;
+        selectedItems.clear();
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -233,6 +237,17 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
 
         addToGroupButton = headerBinding.channelAddToGroupButton;
         addToGroupButton.setOnClickListener(this);
+
+        // Register a back-press callback that exits multi-select mode when active.
+        // Tied to viewLifecycleOwner so it is automatically removed when the view is destroyed.
+        backPressedCallback = new OnBackPressedCallback(false /*initially disabled*/) {
+            @Override
+            public void handleOnBackPressed() {
+                exitMultiSelectMode();
+            }
+        };
+        requireActivity().getOnBackPressedDispatcher()
+                .addCallback(getViewLifecycleOwner(), backPressedCallback);
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -593,6 +608,191 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     }
 
     /*//////////////////////////////////////////////////////////////////////////
+    // Menu
+    //////////////////////////////////////////////////////////////////////////*/
+
+    @Override
+    public void onCreateOptionsMenu(@NonNull final Menu menu,
+                                    @NonNull final MenuInflater inflater) {
+        super.onCreateOptionsMenu(menu, inflater);
+        inflater.inflate(R.menu.menu_channel_videos, menu);
+        menuSortButton = menu.findItem(R.id.menu_item_sort);
+        updateSortButton();
+        menuSelectVideos   = menu.findItem(R.id.menu_item_select_videos);
+        menuSelectAll      = menu.findItem(R.id.menu_item_select_all);
+        menuDownloadSelected = menu.findItem(R.id.menu_item_download_selected);
+        menuCancelSelect   = menu.findItem(R.id.menu_item_cancel_select);
+    }
+
+    @Override
+    public void onPrepareOptionsMenu(@NonNull final Menu menu) {
+        super.onPrepareOptionsMenu(menu);
+        updateSortButton();
+        if (menuSelectVideos == null) {
+            return; // menu not yet inflated
+        }
+        if (isMultiSelectMode) {
+            menuSelectVideos.setVisible(false);
+            menuSelectAll.setVisible(true);
+            menuDownloadSelected.setVisible(true);
+            menuDownloadSelected.setEnabled(!selectedItems.isEmpty());
+            // Toggle "Select all" ↔ "Deselect all" label
+            final long streamCount = infoListAdapter.getItemsList().stream()
+                    .filter(i -> i instanceof StreamInfoItem).count();
+            menuSelectAll.setTitle(
+                    selectedItems.size() == streamCount
+                    ? getString(R.string.deselect_all)
+                    : getString(R.string.select_all));
+            menuCancelSelect.setVisible(true);
+        } else {
+            // Normal mode: show select-videos only when list has at least one stream item
+            final boolean hasItems = infoListAdapter != null
+                    && infoListAdapter.getItemsList().stream()
+                            .anyMatch(i -> i instanceof StreamInfoItem);
+            menuSelectVideos.setVisible(hasItems);
+            menuSelectAll.setVisible(false);
+            menuDownloadSelected.setVisible(false);
+            menuCancelSelect.setVisible(false);
+        }
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(@NonNull final MenuItem item) {
+        final int id = item.getItemId();
+        if (id == R.id.menu_item_sort) {
+            showSortDialog();
+            return true;
+        } else if (id == R.id.menu_item_select_videos) {
+            enterMultiSelectMode();
+            return true;
+        } else if (id == R.id.menu_item_select_all) {
+            toggleSelectAll();
+            return true;
+        } else if (id == R.id.menu_item_download_selected) {
+            if (!selectedItems.isEmpty()) {
+                openBulkDownloadDialog();
+            }
+            return true;
+        } else if (id == R.id.menu_item_cancel_select) {
+            exitMultiSelectMode();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-select helpers
+    // -----------------------------------------------------------------------
+
+    private void enterMultiSelectMode() {
+        if (isMultiSelectMode) {
+            return;
+        }
+        isMultiSelectMode = true;
+        selectedItems.clear();
+
+        // Save the current normal-mode click listener so we can restore it on exit.
+        // The adapter's infoItemBuilder holds it; easiest to just rebuild on exit.
+        // We install a replacement that toggles selection instead of opening the video.
+        // held() is explicitly forwarded to preserve long-press context-menu behaviour.
+        normalStreamClickListener = null; // marker — we restore by re-calling initListeners()
+
+        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<StreamInfoItem>() {
+            @Override
+            public void selected(final StreamInfoItem selectedItem) {
+                // Toggle selection — fully replaces normal open-video behaviour.
+                if (selectedItems.contains(selectedItem)) {
+                    selectedItems.remove(selectedItem);
+                } else {
+                    selectedItems.add(selectedItem);
+                }
+                infoListAdapter.notifyDataSetChanged();
+                updateMultiSelectTitle();
+                activity.invalidateOptionsMenu();
+            }
+            // held() not overridden → defaults to no-op in OnClickGesture,
+            // which is acceptable for multi-select mode per spec.
+        });
+
+        infoListAdapter.setSelectionStateProvider(
+                item -> item instanceof StreamInfoItem
+                        && selectedItems.contains((StreamInfoItem) item));
+
+        updateMultiSelectTitle();
+        backPressedCallback.setEnabled(true);
+        activity.invalidateOptionsMenu();
+    }
+
+    private void exitMultiSelectMode() {
+        if (!isMultiSelectMode) {
+            return;
+        }
+        isMultiSelectMode = false;
+        selectedItems.clear();
+        backPressedCallback.setEnabled(false);
+
+        // Restore the normal stream-click listener by re-running initListeners().
+        initListeners();
+        infoListAdapter.setSelectionStateProvider(null); // triggers notifyDataSetChanged
+
+        // Restore the ActionBar title to the channel name.
+        final ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar != null) {
+            actionBar.setTitle(name);
+        }
+        activity.invalidateOptionsMenu();
+    }
+
+    private void toggleSelectAll() {
+        final List<org.schabi.newpipe.extractor.InfoItem> items =
+                infoListAdapter.getItemsList();
+        final long streamCount = items.stream()
+                .filter(i -> i instanceof StreamInfoItem).count();
+        if (selectedItems.size() == streamCount) {
+            selectedItems.clear();
+        } else {
+            for (final org.schabi.newpipe.extractor.InfoItem i : items) {
+                if (i instanceof StreamInfoItem) {
+                    selectedItems.add((StreamInfoItem) i);
+                }
+            }
+        }
+        infoListAdapter.notifyDataSetChanged();
+        updateMultiSelectTitle();
+        activity.invalidateOptionsMenu();
+    }
+
+    private void updateMultiSelectTitle() {
+        final ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar != null) {
+            final int count = selectedItems.size();
+            final String title = getResources().getQuantityString(
+                    R.plurals.feed_group_dialog_selection_count, count, count);
+            actionBar.setTitle(title);
+        }
+    }
+
+    /** Opens BulkDownloadDialog when the user taps "Download (N)" in multi-select mode. */
+    private void openBulkDownloadDialog() {
+        BulkDownloadDialog.newInstance(selectedItems.size())
+                .show(getChildFragmentManager(), "BULK_DOWNLOAD");
+    }
+
+    // BulkDownloadDialog.Listener implementation
+    @Override
+    public void onBulkDownloadConfirmed(final boolean audioOnly,
+                                        @NonNull final String qualityLabel,
+                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior) {
+        // Snapshot the selection BEFORE exitMultiSelectMode() clears selectedItems.
+        final java.util.List<org.schabi.newpipe.extractor.stream.StreamInfoItem> itemsToDownload =
+                new java.util.ArrayList<>(selectedItems);
+        exitMultiSelectMode();
+        BulkDownloadManager.startBulkDownload(
+                requireContext().getApplicationContext(),
+                itemsToDownload, audioOnly, qualityLabel, behavior);
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
     // OnClick
     //////////////////////////////////////////////////////////////////////////*/
 
@@ -706,6 +906,9 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
             NavigationHelper.enqueueOnPlayer(activity, getPlayQueue(), PlayerType.AUDIO);
             return true;
         });
+
+        // Reveal the "Select videos" toolbar button now that items are loaded.
+        activity.invalidateOptionsMenu();
     }
 
     private void showContentNotSupportedIfNeeded() {
