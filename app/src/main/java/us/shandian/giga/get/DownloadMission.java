@@ -553,6 +553,12 @@ public class DownloadMission extends Mission {
         HlsDownloader.cleanup(this);
         SabrDownloader.cleanup(this);
 
+        if (psAlgorithm != null && psAlgorithm.name != null
+                && psAlgorithm.name.equals(Postprocessing.BILIBILI_MUXER)
+                && storage != null && !storage.isInvalid()) {
+            Utility.removeTempFileOfDownloadedVideo(storage);
+        }
+
         notify(DownloadManagerService.MESSAGE_DELETED);
 
         boolean res = deleteThisFromFile();

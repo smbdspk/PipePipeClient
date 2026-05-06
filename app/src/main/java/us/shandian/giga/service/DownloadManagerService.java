@@ -49,6 +49,7 @@ import java.util.Objects;
 import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.HlsDownloadStreamHelper;
 import us.shandian.giga.get.MissionRecoveryInfo;
+import us.shandian.giga.get.PendingFetchMission;
 import us.shandian.giga.get.SabrDownloadStreamHelper;
 import org.schabi.newpipe.streams.io.StoredDirectoryHelper;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
@@ -89,6 +90,14 @@ public class DownloadManagerService extends Service {
     private static final String EXTRA_RESOURCE_MANIFEST_URLS = "DownloadManagerService.extra.resourceManifestUrls";
     private static final String EXTRA_RESOURCE_IS_URLS = "DownloadManagerService.extra.resourceIsUrls";
 
+    private static final String ACTION_ADD_PENDING_FETCH = APPLICATION_ID + ".add_pending_fetch";
+    private static final String EXTRA_SERVICE_ID = "DownloadManagerService.extra.serviceId";
+    private static final String EXTRA_SOURCE_URL = "DownloadManagerService.extra.sourceUrl";
+    private static final String EXTRA_SOURCE_NAME = "DownloadManagerService.extra.sourceName";
+    private static final String EXTRA_AUDIO_ONLY = "DownloadManagerService.extra.audioOnly";
+    private static final String EXTRA_QUALITY_LABEL = "DownloadManagerService.extra.qualityLabel";
+    private static final String EXTRA_EXISTING_FILE_BEHAVIOR = "DownloadManagerService.extra.existingFileBehavior";
+
     private static final String ACTION_RESET_DOWNLOAD_FINISHED = APPLICATION_ID + ".reset_download_finished";
     private static final String ACTION_OPEN_DOWNLOADS_FINISHED = APPLICATION_ID + ".open_downloads_finished";
 
@@ -119,6 +128,9 @@ public class DownloadManagerService extends Service {
     private int downloadFailedNotificationID = DOWNLOADS_NOTIFICATION_ID + 1;
     private Builder downloadFailedNotification = null;
     private final SparseArray<DownloadMission> mFailedDownloads = new SparseArray<>(5);
+
+    private int skipCount = 0;
+    private Builder skipNotification = null;
 
     private Bitmap icLauncher;
     private Bitmap icDownloadDone;
@@ -208,6 +220,8 @@ public class DownloadManagerService extends Service {
         if (action != null) {
             if (action.equals(Intent.ACTION_RUN)) {
                 mHandler.post(() -> startMission(intent));
+            } else if (action.equals(ACTION_ADD_PENDING_FETCH)) {
+                mHandler.post(() -> addPendingFetchMission(intent));
             } else if (downloadDoneNotification != null) {
                 if (action.equals(ACTION_RESET_DOWNLOAD_FINISHED) || action.equals(ACTION_OPEN_DOWNLOADS_FINISHED)) {
                     downloadDoneCount = 0;
@@ -277,6 +291,13 @@ public class DownloadManagerService extends Service {
 
     private boolean handleMessage(@NonNull Message msg) {
         if (mHandler == null) return true;
+
+        if (msg.what == DownloadManager.MESSAGE_SKIPPED) {
+            notifySkippedDownload((String) msg.obj);
+            for (Callback observer : mEchoObservers)
+                observer.handleMessage(msg);
+            return true;
+        }
 
         DownloadMission mission = (DownloadMission) msg.obj;
 
@@ -488,6 +509,47 @@ public class DownloadManagerService extends Service {
         return values;
     }
 
+    private void addPendingFetchMission(Intent intent) {
+        int serviceId = intent.getIntExtra(EXTRA_SERVICE_ID, 0);
+        String sourceUrl = intent.getStringExtra(EXTRA_SOURCE_URL);
+        String sourceName = intent.getStringExtra(EXTRA_SOURCE_NAME);
+        boolean audioOnly = intent.getBooleanExtra(EXTRA_AUDIO_ONLY, false);
+        String qualityLabel = intent.getStringExtra(EXTRA_QUALITY_LABEL);
+        int existingFileBehavior = intent.getIntExtra(EXTRA_EXISTING_FILE_BEHAVIOR,
+                PendingFetchMission.BEHAVIOR_SKIP);
+
+        if (sourceUrl == null || sourceName == null) return;
+
+        String tag = audioOnly ? DownloadManager.TAG_AUDIO : DownloadManager.TAG_VIDEO;
+        StoredFileHelper placeholderStorage = new StoredFileHelper(null,
+                sourceName, StoredFileHelper.DEFAULT_MIME, tag);
+
+        PendingFetchMission mission = new PendingFetchMission(
+                serviceId, sourceUrl, sourceName, audioOnly, qualityLabel,
+                existingFileBehavior, placeholderStorage);
+
+        mission.context = getApplicationContext();
+
+        handleConnectivityState(true);
+
+        mManager.addPendingFetchMission(mission);
+    }
+
+    public static void addPendingFetchMission(Context context, int serviceId,
+                                                String url, String name,
+                                                boolean audioOnly, String qualityLabel,
+                                                int existingFileBehavior) {
+        Intent intent = new Intent(context, DownloadManagerService.class);
+        intent.setAction(ACTION_ADD_PENDING_FETCH);
+        intent.putExtra(EXTRA_SERVICE_ID, serviceId);
+        intent.putExtra(EXTRA_SOURCE_URL, url);
+        intent.putExtra(EXTRA_SOURCE_NAME, name);
+        intent.putExtra(EXTRA_AUDIO_ONLY, audioOnly);
+        intent.putExtra(EXTRA_QUALITY_LABEL, qualityLabel);
+        intent.putExtra(EXTRA_EXISTING_FILE_BEHAVIOR, existingFileBehavior);
+        context.startService(intent);
+    }
+
     public void notifyFinishedDownload(String name) {
         if(name.endsWith(".tmp")) return;
         if (!mDownloadNotificationEnable || mNotificationManager == null) {
@@ -550,6 +612,22 @@ public class DownloadManagerService extends Service {
                 .bigText(mission.storage.getName()));
 
         mNotificationManager.notify(id, downloadFailedNotification.build());
+    }
+
+    private void notifySkippedDownload(String name) {
+        if (!mDownloadNotificationEnable || mNotificationManager == null) return;
+
+        skipCount++;
+        if (skipNotification == null) {
+            skipNotification = new Builder(this, getString(R.string.notification_channel_id))
+                    .setAutoCancel(true)
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentIntent(mOpenDownloadList);
+        }
+
+        skipNotification.setContentTitle(getString(R.string.bulk_download_skipped, skipCount));
+        skipNotification.setContentText(name);
+        mNotificationManager.notify(DOWNLOADS_NOTIFICATION_ID + 2, skipNotification.build());
     }
 
     private PendingIntent makePendingIntent(String action) {

@@ -56,6 +56,7 @@ public class MissionsFragment extends Fragment {
     private MenuItem mClear = null;
     private MenuItem mStart = null;
     private MenuItem mPause = null;
+    private MenuItem mRetry = null;
 
     private RecyclerView mList;
     private View mEmpty;
@@ -178,6 +179,7 @@ public class MissionsFragment extends Fragment {
         mClear = menu.findItem(R.id.clear_list);
         mStart = menu.findItem(R.id.start_downloads);
         mPause = menu.findItem(R.id.pause_downloads);
+        mRetry = menu.findItem(R.id.retry_downloads);
 
         if (mAdapter != null) setAdapterButtons();
 
@@ -186,23 +188,27 @@ public class MissionsFragment extends Fragment {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        final int id = item.getItemId();
-        if (id == R.id.switch_mode) {
-            mLinear = !mLinear;
-            updateList();
-            return true;
-        } else if (id == R.id.clear_list) {
-            showClearDownloadHistoryPrompt();
-            return true;
-        } else if (id == R.id.start_downloads) {
-            mBinder.getDownloadManager().startAllMissions();
-            return true;
-        } else if (id == R.id.pause_downloads) {
-            mBinder.getDownloadManager().pauseAllMissions(false);
-            mAdapter.refreshMissionItems();
-            return true;
-        } else {
-            return super.onOptionsItemSelected(item);
+        switch (item.getItemId()) {
+            case R.id.switch_mode:
+                mLinear = !mLinear;
+                updateList();
+                return true;
+            case R.id.clear_list:
+                showClearDownloadHistoryPrompt();
+                return true;
+            case R.id.start_downloads:
+                mBinder.getDownloadManager().startAllMissions();
+                return true;
+            case R.id.pause_downloads:
+                mBinder.getDownloadManager().pauseAllMissions(false);
+                mAdapter.refreshMissionItems();// update items view
+                return true;
+            case R.id.retry_downloads:
+                mBinder.getDownloadManager().retryAllErrorMissions();
+                mAdapter.refreshMissionItems();
+                return true;
+            default:
+                return super.onOptionsItemSelected(item);
         }
     }
 
@@ -257,10 +263,10 @@ public class MissionsFragment extends Fragment {
     }
 
     private void setAdapterButtons() {
-        if (mClear == null || mStart == null || mPause == null) return;
+        if (mClear == null || mStart == null || mPause == null || mRetry == null) return;
 
         mAdapter.setClearButton(mClear);
-        mAdapter.setMasterButtons(mStart, mPause);
+        mAdapter.setMasterButtons(mStart, mPause, mRetry);
     }
 
     private void recoverMission(@NonNull DownloadMission mission) {
