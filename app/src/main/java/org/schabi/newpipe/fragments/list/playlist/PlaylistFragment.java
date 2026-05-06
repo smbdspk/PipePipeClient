@@ -45,7 +45,8 @@ import org.schabi.newpipe.extractor.playlist.PlaylistInfo;
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper;
 import org.schabi.newpipe.extractor.stream.StreamInfoItem;
 import org.schabi.newpipe.download.BulkDownloadDialog;
-import org.schabi.newpipe.download.BulkDownloadManager;
+import us.shandian.giga.get.PendingFetchMission;
+import us.shandian.giga.service.DownloadManagerService;
 import org.schabi.newpipe.fragments.list.BaseListInfoFragment;
 import org.schabi.newpipe.info_list.dialog.InfoItemDialog;
 import org.schabi.newpipe.local.dialog.PlaylistDialog;
@@ -455,14 +456,24 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
     @Override
     public void onBulkDownloadConfirmed(final boolean audioOnly,
                                         @NonNull final String qualityLabel,
-                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior) {
-        // Snapshot the selection BEFORE exitMultiSelectMode() clears selectedItems.
+                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior,
+                                        final int fetchThreads) {
         final java.util.List<StreamInfoItem> itemsToDownload =
                 new java.util.ArrayList<>(selectedItems);
         exitMultiSelectMode();
-        BulkDownloadManager.startBulkDownload(
-                requireContext().getApplicationContext(),
-                itemsToDownload, audioOnly, qualityLabel, behavior);
+        final int fileBehavior;
+        switch (behavior) {
+            case OVERWRITE: fileBehavior = PendingFetchMission.BEHAVIOR_OVERWRITE; break;
+            case UNIQUE_NAME: fileBehavior = PendingFetchMission.BEHAVIOR_UNIQUE_NAME; break;
+            default: fileBehavior = PendingFetchMission.BEHAVIOR_SKIP; break;
+        }
+        PendingFetchMission.setMaxConcurrentFetches(fetchThreads);
+        final android.content.Context ctx = requireContext().getApplicationContext();
+        for (final StreamInfoItem item : itemsToDownload) {
+            DownloadManagerService.addPendingFetchMission(ctx,
+                    item.getServiceId(), item.getUrl(), item.getName(),
+                    audioOnly, qualityLabel, fileBehavior);
+        }
     }
 
 

@@ -59,7 +59,8 @@ import org.schabi.newpipe.player.PlayerService.PlayerType;
 import org.schabi.newpipe.player.playqueue.ChannelPlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.download.BulkDownloadDialog;
-import org.schabi.newpipe.download.BulkDownloadManager;
+import us.shandian.giga.get.PendingFetchMission;
+import us.shandian.giga.service.DownloadManagerService;
 import org.schabi.newpipe.util.ExtractorHelper;
 import org.schabi.newpipe.util.Localization;
 import org.schabi.newpipe.util.NavigationHelper;
@@ -782,14 +783,24 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     @Override
     public void onBulkDownloadConfirmed(final boolean audioOnly,
                                         @NonNull final String qualityLabel,
-                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior) {
-        // Snapshot the selection BEFORE exitMultiSelectMode() clears selectedItems.
+                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior,
+                                        final int fetchThreads) {
         final java.util.List<org.schabi.newpipe.extractor.stream.StreamInfoItem> itemsToDownload =
                 new java.util.ArrayList<>(selectedItems);
         exitMultiSelectMode();
-        BulkDownloadManager.startBulkDownload(
-                requireContext().getApplicationContext(),
-                itemsToDownload, audioOnly, qualityLabel, behavior);
+        final int fileBehavior;
+        switch (behavior) {
+            case OVERWRITE: fileBehavior = PendingFetchMission.BEHAVIOR_OVERWRITE; break;
+            case UNIQUE_NAME: fileBehavior = PendingFetchMission.BEHAVIOR_UNIQUE_NAME; break;
+            default: fileBehavior = PendingFetchMission.BEHAVIOR_SKIP; break;
+        }
+        PendingFetchMission.setMaxConcurrentFetches(fetchThreads);
+        final android.content.Context ctx = requireContext().getApplicationContext();
+        for (final org.schabi.newpipe.extractor.stream.StreamInfoItem item : itemsToDownload) {
+            DownloadManagerService.addPendingFetchMission(ctx,
+                    item.getServiceId(), item.getUrl(), item.getName(),
+                    audioOnly, qualityLabel, fileBehavior);
+        }
     }
 
     /*//////////////////////////////////////////////////////////////////////////

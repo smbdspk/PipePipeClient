@@ -565,11 +565,15 @@
 <string name="download_selected_zero">Download (0)</string>
     <!-- BulkDownloadDialog UI strings -->
         <!-- Bulk download notification strings -->
-    <string name="bulk_download_notif_preparing">Preparing %1$d downloads…</string>
-    <string name="bulk_download_notif_progress">Downloading… (%1$d / %2$d)</string>
+    <string name="bulk_download_notif_preparing">Preparing %1$d downloadsï¿½</string>
+    <string name="bulk_download_notif_progress">Downloadingï¿½ (%1$d / %2$d)</string>
     <string name="bulk_download_notif_done">Bulk download complete</string>
     <string name="bulk_download_notif_summary">%1$d downloaded, %2$d skipped, %3$d failed</string>
-    <string name="bulk_download_no_folder">Download folder not set — please configure it in settings</string>
+    <string name="bulk_download_no_folder">Download folder not set ï¿½ please configure it in settings</string>
+    <string name="bulk_download_fetching">Fetching\u2026</string>
+    <string name="bulk_download_fetch_error">Fetch failed</string>
+    <string name="bulk_download_skipped">Skipped %1$d downloads (file already exists)</string>
+    <string name="bulk_download_fetch_threads_label">Simultaneous fetches</string>
     <string name="start_download">Download</string>
     <string name="bulk_download_format_label">Format</string>
     <string name="bulk_download_audio_only">Audio only</string>
@@ -616,6 +620,7 @@
 <string name="enable_queue_limit_desc">One download will run at the same time</string>
 <string name="start_downloads">Start downloads</string>
 <string name="pause_downloads">Pause downloads</string>
+    <string name="retry_downloads">Retry all errors</string>
 <string name="downloads_storage_ask_title">Ask where to download</string>
 <string name="downloads_storage_ask_summary">You will be asked where to save each download.\nEnable the system folder picker (SAF) if you want to download to an external SD card</string>
 <string name="downloads_storage_ask_summary_no_saf_notice">You will be asked where to save each download</string>

@@ -15,6 +15,7 @@ import java.util.*;
 import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.FinishedMission;
 import us.shandian.giga.get.Mission;
+import us.shandian.giga.get.PendingFetchMission;
 import us.shandian.giga.get.sqlite.FinishedMissionStore;
 import org.schabi.newpipe.streams.io.StoredDirectoryHelper;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
@@ -32,6 +33,7 @@ public class DownloadManager {
     public final static int SPECIAL_NOTHING = 0;
     public final static int SPECIAL_PENDING = 1;
     public final static int SPECIAL_FINISHED = 2;
+    public final static int MESSAGE_SKIPPED = 5;
 
     public static final String TAG_AUDIO = "audio";
     public static final String TAG_VIDEO = "video";
@@ -44,6 +46,7 @@ public class DownloadManager {
 
     private final Handler mHandler;
     private final File mPendingMissionsDir;
+    private final Context mContext;
 
     private NetworkState mLastNetworkStatus = NetworkState.Unavailable;
 
@@ -66,6 +69,7 @@ public class DownloadManager {
             Log.d(TAG, "new DownloadManager instance. 0x" + Integer.toHexString(this.hashCode()));
         }
 
+        mContext = context.getApplicationContext();
         mFinishedMissionStore = new FinishedMissionStore(context);
         mHandler = handler;
         mMainStorageAudio = storageAudio;
@@ -175,6 +179,24 @@ public class DownloadManager {
 
             mis.threads = new Thread[0];
 
+            if (mis instanceof PendingFetchMission) {
+                PendingFetchMission pfm = (PendingFetchMission) mis;
+                pfm.setDownloadManager(this);
+                mis.metadata = sub;
+                mis.maxRetry = mPrefMaxRetry;
+                mis.mHandler = mHandler;
+                mis.context = ctx;
+                if (!pfm.pendingFetch && mis.storage != null && !mis.storage.isInvalid()) {
+                    try {
+                        mis.storage = StoredFileHelper.deserialize(mis.storage, ctx);
+                    } catch (Exception ex) {
+                        Log.e(TAG, "Failed to deserialize PFM storage for " + mis.storage.toString(), ex);
+                    }
+                }
+                mMissionsPending.add(mis);
+                continue;
+            }
+
             boolean exists;
             try {
                 mis.storage = StoredFileHelper.deserialize(mis.storage, ctx);
@@ -268,6 +290,46 @@ public class DownloadManager {
         }
     }
 
+
+    void addPendingFetchMission(PendingFetchMission mission) {
+        synchronized (this) {
+            mission.timestamp = System.currentTimeMillis();
+            mission.mHandler = mHandler;
+            mission.maxRetry = mPrefMaxRetry;
+            mission.setDownloadManager(this);
+            mission.context = mContext;
+
+            while (true) {
+                mission.metadata = new File(mPendingMissionsDir, String.valueOf(mission.timestamp));
+                if (!mission.metadata.isFile() && !mission.metadata.exists()) {
+                    try {
+                        if (!mission.metadata.createNewFile())
+                            throw new RuntimeException("Cant create download metadata file");
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    break;
+                }
+                mission.timestamp = System.currentTimeMillis();
+            }
+
+            mSelfMissionsControl = true;
+            mMissionsPending.add(mission);
+
+            Utility.writeToFile(mission.metadata, mission);
+
+            if (mission.errCode == ERROR_NOTHING) {
+                boolean start = !mPrefQueueLimit || getRunningMissionsCount() < 1;
+                if (canDownloadInCurrentNetwork() && start) {
+                    mission.start();
+                }
+            }
+        }
+    }
+
+    public void notifySkipped(String filename) {
+        mHandler.obtainMessage(MESSAGE_SKIPPED, filename).sendToTarget();
+    }
 
     public void resumeMission(DownloadMission mission) {
         if (!mission.running) {
@@ -420,12 +482,74 @@ public class DownloadManager {
     }
 
     public void startAllMissions() {
+        final ArrayList<DownloadMission> toStart;
         synchronized (this) {
-            for (DownloadMission mission : mMissionsPending) {
+            toStart = new ArrayList<>(mMissionsPending);
+        }
+        new Thread(() -> {
+            for (DownloadMission mission : toStart) {
                 if (mission.running || mission.isCorrupt()) continue;
-
                 mission.start();
             }
+        }).start();
+    }
+
+public void retryAllErrorMissions() {
+        final ArrayList<DownloadMission> toRetry;
+        synchronized (this) {
+            toRetry = new ArrayList<>(mMissionsPending);
+        }
+        new Thread(() -> {
+            for (DownloadMission mission : toRetry) {
+                synchronized (this) {
+                    if (mission.running) continue;
+                    if (mission.errCode == DownloadMission.ERROR_NOTHING) continue;
+                    if (mission.isFinished()) continue;
+                }
+
+                if (mission instanceof PendingFetchMission) {
+                    ((PendingFetchMission) mission).refetch();
+                } else if (mission.source != null && !mission.source.isEmpty()) {
+                    convertToPendingFetchMission(mission);
+                } else {
+                    tryRecover(mission);
+                    synchronized (this) {
+                        if (!mission.storage.isInvalid()) {
+                            mission.errObject = null;
+                            mission.resetState(true, false, DownloadMission.ERROR_NOTHING);
+                        }
+                    }
+                    mission.start();
+                }
+            }
+        }).start();
+    }
+
+    public void convertToPendingFetchMission(@NonNull DownloadMission mission) {
+        try {
+            int serviceId = org.schabi.newpipe.extractor.NewPipe
+                    .getServiceByUrl(mission.source).getServiceId();
+            boolean audioOnly = mission.kind == 'a';
+            String qualityLabel = audioOnly ? "Best" : "Best";
+            String name = mission.storage != null && !mission.storage.isInvalid()
+                    ? mission.storage.getName() : mission.source;
+            String tag = audioOnly ? TAG_AUDIO : TAG_VIDEO;
+
+            mission.delete();
+
+            StoredFileHelper placeholderStorage = new StoredFileHelper(null, name,
+                    StoredFileHelper.DEFAULT_MIME, tag);
+            PendingFetchMission pfm = new PendingFetchMission(
+                    serviceId, mission.source, name,
+                    audioOnly, qualityLabel,
+                    PendingFetchMission.BEHAVIOR_OVERWRITE, placeholderStorage);
+
+            addPendingFetchMission(pfm);
+} catch (final Exception ignored) {
+            synchronized (this) {
+                mMissionsPending.remove(mission);
+            }
+            mission.delete();
         }
     }
 
@@ -450,7 +574,7 @@ public class DownloadManager {
      *
      * @return true if one or multiple missions are running, otherwise, false
      */
-    boolean runMissions() {
+    public boolean runMissions() {
         synchronized (this) {
             if (mMissionsPending.size() < 1) return false;
             if (!canDownloadInCurrentNetwork()) return false;
@@ -561,7 +685,7 @@ public class DownloadManager {
         return directory != null && directory.canWrite() && directory.exists();
     }
 
-    static File pickAvailableTemporalDir(@NonNull Context ctx) {
+    public static File pickAvailableTemporalDir(@NonNull Context ctx) {
         File dir = ctx.getExternalFilesDir(null);
         if (isDirectoryAvailable(dir)) return dir;
 
@@ -580,7 +704,7 @@ public class DownloadManager {
     }
 
     @Nullable
-    private StoredDirectoryHelper getMainStorage(@NonNull String tag) {
+    public StoredDirectoryHelper getMainStorage(@NonNull String tag) {
         if (tag.equals(TAG_AUDIO)) return mMainStorageAudio;
         if (tag.equals(TAG_VIDEO)) return mMainStorageVideo;
 
@@ -708,6 +832,19 @@ public class DownloadManager {
             }
 
             return new boolean[]{running, paused};
+        }
+
+        public boolean hasErrorMissions() {
+            synchronized (DownloadManager.this) {
+                for (DownloadMission mission : mMissionsPending) {
+                    if (hidden.contains(mission))
+                        continue;
+                    if (mission.errCode != DownloadMission.ERROR_NOTHING && !mission.running
+                            && !mission.isFinished())
+                        return true;
+                }
+            }
+            return false;
         }
 
 
