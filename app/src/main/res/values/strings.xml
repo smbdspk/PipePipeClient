@@ -1116,4 +1116,6 @@
 <string name="sabr_backoff_notification_channel_description">Notifications when YouTube requires a playback request to wait</string>
 <string name="sabr_backoff_notification_title">Waiting for YouTube</string>
 <string name="sabr_backoff_notification_content">YouTube forces us to wait %1$d seconds before continuing playback</string>
+<string name="delete_errored_missions">Delete errored</string>
+<string name="delete_fetch_missions">Delete fetches</string>
 </resources>

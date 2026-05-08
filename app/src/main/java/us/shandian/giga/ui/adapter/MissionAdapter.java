@@ -123,6 +123,8 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
     private MenuItem mStartButton;
     private MenuItem mPauseButton;
     private MenuItem mRetryButton;
+    private MenuItem mDeleteErrored;
+    private MenuItem mDeleteFetches;
     private final View mEmptyMessage;
     private RecoverHelper mRecover;
     private final View mView;
@@ -216,6 +218,12 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         h.name.setText(item.mission.storage.getName());
 
         h.progress.setColors(Utility.getBackgroundForFileType(mContext, type), Utility.getForegroundForFileType(mContext, type));
+
+        if (item.mission instanceof PendingFetchMission
+                && ((PendingFetchMission) item.mission).pendingFetch) {
+            h.progress.setColors(ContextCompat.getColor(mContext, R.color.placeholder_background),
+                    ContextCompat.getColor(mContext, R.color.placeholder_foreground));
+        }
 
         if (h.item.mission instanceof DownloadMission) {
             DownloadMission mission = (DownloadMission) item.mission;
@@ -813,6 +821,8 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
         checkEmptyMessageVisibility();
         if (mClear != null) mClear.setVisible(mIterator.hasFinishedMissions());
+        if (mDeleteErrored != null) mDeleteErrored.setVisible(mIterator.hasErrorMissions());
+        if (mDeleteFetches != null) mDeleteFetches.setVisible(mIterator.hasPendingFetchMissions());
     }
 
     public void forceUpdate() {
@@ -845,6 +855,20 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         mRetryButton = retryButton;
 
         if (init) checkMasterButtonsVisibility();
+    }
+
+    public void setUtilityButtons(MenuItem deleteErrored, MenuItem deleteFetches) {
+        boolean init = mDeleteErrored == null || mDeleteFetches == null;
+
+        if (mDeleteErrored == null && deleteErrored != null) {
+            deleteErrored.setVisible(mIterator.hasErrorMissions());
+        }
+        if (mDeleteFetches == null && deleteFetches != null) {
+            deleteFetches.setVisible(mIterator.hasPendingFetchMissions());
+        }
+
+        mDeleteErrored = deleteErrored;
+        mDeleteFetches = deleteFetches;
     }
 
     private void checkEmptyMessageVisibility() {

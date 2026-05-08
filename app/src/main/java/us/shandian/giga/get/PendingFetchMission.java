@@ -121,6 +121,7 @@ public class PendingFetchMission extends DownloadMission {
 
         final StoredDirectoryHelper dir = openStorageDir();
         if (dir == null) {
+            pendingFetch = false;
             errCode = ERROR_NO_STORAGE;
             errObject = null;
             running = false;
@@ -144,6 +145,15 @@ public class PendingFetchMission extends DownloadMission {
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(this::onFetchSuccess, this::onFetchError);
+    }
+
+    @Override
+    void doRecover(int errorCode) {
+        if (!pendingFetch) {
+            refetch();
+            return;
+        }
+        super.doRecover(errorCode);
     }
 
     public void refetch() {
@@ -187,6 +197,9 @@ public class PendingFetchMission extends DownloadMission {
 
         writeThisToFile();
         startFetch();
+        if (downloadManager != null) {
+            downloadManager.runMissions();
+        }
     }
 
     @Nullable
@@ -204,6 +217,7 @@ public class PendingFetchMission extends DownloadMission {
         } catch (final Exception e) {
             Log.e(TAG, "Error promoting mission for " + sourceUrl, e);
             cleanupBilibiliTempFiles(bilibiliTmpBase);
+            pendingFetch = false;
             errCode = ERROR_FETCH_FAILED;
             errObject = e;
             running = false;
@@ -222,6 +236,7 @@ public class PendingFetchMission extends DownloadMission {
         Log.e(TAG, "Fetch failed for " + sourceUrl, error);
         fetchDisposable = null;
         activeFetchCount.decrementAndGet();
+        pendingFetch = false;
         running = false;
         errCode = ERROR_FETCH_FAILED;
         errObject = error instanceof Exception ? (Exception) error : new Exception(error);
@@ -326,6 +341,9 @@ public class PendingFetchMission extends DownloadMission {
                     downloadManager.deleteMission(this);
                     return null;
                 }
+                if (downloadManager != null) {
+                    downloadManager.forgetMissionsBySource(info.getUrl(), this);
+                }
                 storage = dir.createFile(fullFilename, mime);
                 break;
             case BEHAVIOR_UNIQUE_NAME:
@@ -334,6 +352,10 @@ public class PendingFetchMission extends DownloadMission {
             case BEHAVIOR_OVERWRITE:
             default:
                 storage = dir.createFile(fullFilename, mime);
+                if (downloadManager != null) {
+                    downloadManager.forgetMission(storage);
+                    downloadManager.forgetMissionsBySource(info.getUrl(), this);
+                }
                 break;
         }
 
