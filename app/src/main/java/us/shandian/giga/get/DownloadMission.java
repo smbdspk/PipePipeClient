@@ -12,6 +12,7 @@ import org.schabi.newpipe.streams.io.StoredFileHelper;
 import us.shandian.giga.hls.state.HlsDownloadCheckpoint;
 import us.shandian.giga.postprocessing.Postprocessing;
 import us.shandian.giga.service.DownloadManagerService;
+import us.shandian.giga.util.BilibiliTempHelper;
 import us.shandian.giga.util.Utility;
 
 import javax.net.ssl.SSLException;
@@ -136,10 +137,12 @@ public class DownloadMission extends Mission {
     public HlsDownloadCheckpoint hlsCheckpoint;
 
     private transient int finishCount;
+    transient volatile boolean recoveryTriggered;
+
     public transient volatile boolean running;
     public boolean enqueued;
 
-    public int errCode = ERROR_NOTHING;
+    public volatile int errCode = ERROR_NOTHING;
     public Exception errObject = null;
 
     public transient Handler mHandler;
@@ -336,12 +339,18 @@ public class DownloadMission extends Mission {
         }
 
         if (err instanceof IOException) {
-            if (err.getMessage().contains("Permission denied")) {
-                code = ERROR_PERMISSION_DENIED;
-                err = null;
-            } else if (err.getMessage().contains("ENOSPC")) {
-                code = ERROR_INSUFFICIENT_STORAGE;
-                err = null;
+            String msg = err.getMessage();
+            if (msg != null) {
+                if (msg.contains("Permission denied")) {
+                    code = ERROR_PERMISSION_DENIED;
+                    err = null;
+                } else if (msg.contains("ENOSPC")) {
+                    code = ERROR_INSUFFICIENT_STORAGE;
+                    err = null;
+                } else if (!storage.canWrite()) {
+                    code = ERROR_FILE_CREATION;
+                    err = null;
+                }
             } else if (!storage.canWrite()) {
                 code = ERROR_FILE_CREATION;
                 err = null;
@@ -435,7 +444,7 @@ public class DownloadMission extends Mission {
     /**
      * Start downloading with multiple threads.
      */
-    public void start() {
+    public synchronized void start() {
         if (running || isFinished() || urls.length < 1) return;
 
         // ensure that the previous state is completely paused.
@@ -443,6 +452,7 @@ public class DownloadMission extends Mission {
 
         running = true;
         errCode = ERROR_NOTHING;
+        recoveryTriggered = false;
 
         if (hasInvalidStorage()) {
             notifyError(ERROR_FILE_CREATION, null);
@@ -544,7 +554,7 @@ public class DownloadMission extends Mission {
         if (psAlgorithm != null && psAlgorithm.name != null
                 && psAlgorithm.name.equals(Postprocessing.BILIBILI_MUXER)
                 && storage != null && !storage.isInvalid()) {
-            Utility.removeTempFileOfDownloadedVideo(storage);
+            BilibiliTempHelper.cleanupSidecarFilesFileIO(storage);
         }
 
         notify(DownloadManagerService.MESSAGE_DELETED);
@@ -652,9 +662,16 @@ public class DownloadMission extends Mission {
     public long getLength() {
         long calculated;
         if (psState == 1 || psState == 3) {
-            if(psAlgorithm != null && psAlgorithm.name == NICONICO_MUXER) {
-                long result = (long) Math.ceil(Long.parseLong(URLDecoder.decode(urls[0].split("&length=")[1]))/6.0);
-                return result * (kind == 'v'? 2 :1);
+            if (psAlgorithm != null && psAlgorithm.name != null
+                    && psAlgorithm.name.equals(NICONICO_MUXER)) {
+                try {
+                    String[] parts = urls[0].split("&length=");
+                    if (parts.length > 1) {
+                        long result = (long) Math.ceil(
+                                Long.parseLong(URLDecoder.decode(parts[1])) / 6.0);
+                        return result * (kind == 'v' ? 2 : 1);
+                    }
+                } catch (final Exception ignored) { }
             }
             return length;
         }

@@ -26,18 +26,22 @@ class WebMMuxer extends Postprocessing {
         WebMWriter muxer = new WebMWriter(sources);
         muxer.parseSources();
 
-        // youtube uses a webm with a fake video track that acts as a "cover image"
         int[] indexes = new int[sources.length];
+        boolean foundAudio = false;
 
         for (int i = 0; i < sources.length; i++) {
             WebMTrack[] tracks = muxer.getTracksFromSource(i);
             for (int j = 0; j < tracks.length; j++) {
                 if (tracks[j].kind == TrackKind.Audio) {
                     indexes[i] = j;
-                    i = sources.length;
+                    foundAudio = true;
                     break;
                 }
             }
+        }
+
+        if (!foundAudio) {
+            throw new IOException("No audio track found in any source");
         }
 
         muxer.selectTracks(indexes);

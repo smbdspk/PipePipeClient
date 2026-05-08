@@ -56,8 +56,8 @@ public class Utility {
 
     public static String formatBytes(long bytes) {
         Locale locale = Locale.getDefault();
-        if (bytes < 50 * 1024) {
-            return "Unknown";
+        if (bytes < 1024) {
+            return String.format(locale, "%d B", bytes);
         } else if (bytes < 1024 * 1024) {
             return String.format(locale, "%.2f kB", bytes / 1024d);
         } else if (bytes < 1024 * 1024 * 1024) {
@@ -85,9 +85,8 @@ public class Utility {
         try (ObjectOutputStream objectOutputStream = new ObjectOutputStream(new BufferedOutputStream(new FileOutputStream(file)))) {
             objectOutputStream.writeObject(serializable);
         } catch (Exception e) {
-            //nothing to do
+            Log.e("Utility", "Failed to write object to " + file, e);
         }
-        //nothing to do
     }
 
     @Nullable
@@ -325,49 +324,58 @@ public class Utility {
 
         return str + pad(s);
     }
+
+    public static boolean isInvalidContentType(String contentType) {
+        if (contentType == null) return false;
+        String lower = contentType.toLowerCase();
+        return lower.startsWith("text/html")
+                || lower.startsWith("application/json")
+                || lower.startsWith("text/plain");
+    }
+
     public static void setRequestPropertyIfDownloadingBilibili(String url, HttpURLConnection conn) throws IOException {
         if(BilibiliService.isBiliBiliDownloadUrl(url)){
-            // from header map set RequestProperty
             Map<String, List<String>> headerMap = BilibiliService.getUserAgentHeaders(WWW_REFERER);
             for (Map.Entry<String, List<String>> entry : headerMap.entrySet()) {
                 String key = entry.getKey();
                 List<String> value = entry.getValue();
-                if (value.size() == 1) {
-                    conn.setRequestProperty(key, value.get(0));
-                } else {
-                    conn.setRequestProperty(key, value.toString());
-                }
+                conn.setRequestProperty(key, String.join(", ", value));
             }
         }
     }
 
     public static void removeTempFileOfDownloadedVideo(StoredFileHelper storedFileHelper) {
+        String name = storedFileHelper.getName();
+        String baseExt = getFileExt(name);
+        if (baseExt == null) baseExt = ".mp4";
+        String tmpMp4 = name.replace(baseExt, ".tmp" + baseExt);
+        String tmp = name.replace(baseExt, ".tmp");
+
         if(storedFileHelper.docTree == null) {
-            // ioTree instead
             try {
-                File ioTree = storedFileHelper.ioFile;
+                File ioTree = storedFileHelper.ioFile != null ? storedFileHelper.ioFile.getParentFile() : null;
+                if (ioTree == null) return;
                 for (final File file : ioTree.listFiles()) {
-                    if (file.getName().equals(storedFileHelper.getName().replace(".mp4", ".tmp.mp4"))
-                            || file.getName().equals(storedFileHelper.getName().replace(".mp4", ".tmp"))) {
+                    if (file.getName().equals(tmpMp4) || file.getName().equals(tmp)) {
                         file.delete();
                     }
                 }
-                return;
             } catch (Exception e) {
-                e.printStackTrace();
+                Log.w("Utility", "Failed to remove temp files", e);
             }
+            return;
         }
-        try{
+        try {
             DocumentFile docTree = storedFileHelper.docTree;
             DocumentFile[] docFiles = docTree.listFiles();
             for (DocumentFile docFile : docFiles) {
-                if (docFile.getName().equals(storedFileHelper.getName().replace(".mp4", ".tmp.mp4"))
-                        || docFile.getName().equals(storedFileHelper.getName().replace(".mp4", ".tmp"))) {
+                if (docFile.getName() != null
+                        && (docFile.getName().equals(tmpMp4) || docFile.getName().equals(tmp))) {
                     docFile.delete();
                 }
             }
-        } catch (Exception e){
-            e.printStackTrace();
+        } catch (Exception e) {
+            Log.w("Utility", "Failed to remove temp files", e);
         }
     }
 }

@@ -29,6 +29,7 @@ import org.schabi.newpipe.RouterActivity;
 import org.schabi.newpipe.about.AboutActivity;
 import org.schabi.newpipe.database.feed.model.FeedGroupEntity;
 import org.schabi.newpipe.download.DownloadActivity;
+import org.schabi.newpipe.extractor.MediaFormat;
 import org.schabi.newpipe.extractor.NewPipe;
 import org.schabi.newpipe.extractor.StreamingService;
 import org.schabi.newpipe.extractor.exceptions.ExtractionException;
@@ -270,7 +271,8 @@ public final class NavigationHelper {
                                             @NonNull final Stream stream) {
         final Intent intent = new Intent();
         intent.setAction(Intent.ACTION_VIEW);
-        intent.setDataAndType(Uri.parse(stream.getUrl()), stream.getFormat().getMimeType());
+        final MediaFormat fmt = stream.getFormat();
+        intent.setDataAndType(Uri.parse(stream.getUrl()), fmt != null ? fmt.getMimeType() : "video/*");
         intent.putExtra(Intent.EXTRA_TITLE, name);
         intent.putExtra("title", name);
         intent.putExtra("artist", artist);

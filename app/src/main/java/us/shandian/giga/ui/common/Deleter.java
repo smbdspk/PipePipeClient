@@ -25,7 +25,7 @@ public class Deleter {
 
     private Snackbar snackbar;
     private ArrayList<Mission> items;
-    private boolean running = true;
+    private volatile boolean running = true;
 
     private final Context mContext;
     private final MissionAdapter mAdapter;
@@ -140,7 +140,10 @@ public class Deleter {
 
         pause();
 
-        for (Mission mission : items) mDownloadManager.deleteMission(mission);
+        for (Mission mission : items) {
+            mIterator.unHide(mission);
+            mDownloadManager.deleteMission(mission);
+        }
         items = null;
     }
 }

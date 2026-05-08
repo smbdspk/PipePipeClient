@@ -60,14 +60,9 @@ public class DownloadInitializer extends Thread {
 
                         if (i == 0) {
                             String ct = mConn.getContentType();
-                            if (ct != null) {
-                                String lower = ct.toLowerCase();
-                                if (lower.startsWith("text/html")
-                                        || lower.startsWith("application/json")
-                                        || lower.startsWith("text/plain")) {
-                                    mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
-                                    return;
-                                }
+                            if (Utility.isInvalidContentType(ct)) {
+                                mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                                return;
                             }
                             long cl = Utility.getTotalContentLength(mConn);
                             if (cl == -1 && mConn.getResponseCode() == 200) {
@@ -108,14 +103,9 @@ public class DownloadInitializer extends Thread {
                     mMission.establishConnection(mId, mConn);
 
                     String ct = mConn.getContentType();
-                    if (ct != null) {
-                        String lower = ct.toLowerCase();
-                        if (lower.startsWith("text/html")
-                                || lower.startsWith("application/json")
-                                || lower.startsWith("text/plain")) {
-                            mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
-                            return;
-                        }
+                    if (Utility.isInvalidContentType(ct)) {
+                        mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                        return;
                     }
                     long cl = Utility.getTotalContentLength(mConn);
                     if (cl == -1 && mConn.getResponseCode() == 200) {

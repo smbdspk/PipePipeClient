@@ -179,11 +179,14 @@ public class StreamItemAdapter<T extends Stream, U extends Stream> extends BaseA
         } else {
             String text = "";
             if (stream instanceof VideoStream) {
-                text = ((VideoStream) stream).getCodec().toUpperCase().split("\\.")[0];
-                if (text.isEmpty()) {
+                final String codec = ((VideoStream) stream).getCodec();
+                if (codec != null) {
+                    text = codec.toUpperCase().split("\\.")[0];
+                }
+                if (text.isEmpty() && stream.getFormat() != null) {
                     text = stream.getFormat().getName();
                 }
-            } else {
+            } else if (stream.getFormat() != null) {
                 text = stream.getFormat().getName();
             }
             formatNameView.setText(text);

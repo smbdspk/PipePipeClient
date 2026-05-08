@@ -39,6 +39,8 @@ public class SecondaryStreamHelper<T extends Stream> {
     public static AudioStream getAudioStreamFor(@Nullable final Context context,
                                                 @NonNull final List<AudioStream> audioStreams,
                                                 @NonNull final VideoStream videoStream) {
+        if (videoStream.getFormat() == null) return null;
+
         switch (videoStream.getFormat()) {
             case WEBM:
             case MPEG_4:

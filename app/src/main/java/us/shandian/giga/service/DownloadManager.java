@@ -11,6 +11,8 @@ import androidx.recyclerview.widget.DiffUtil;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.FinishedMission;
@@ -47,6 +49,11 @@ public class DownloadManager {
     private final Handler mHandler;
     private final File mPendingMissionsDir;
     private final Context mContext;
+    private final ExecutorService mExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "DownloadManager-Worker");
+        t.setPriority(Thread.NORM_PRIORITY - 1);
+        return t;
+    });
 
     private NetworkState mLastNetworkStatus = NetworkState.Unavailable;
 
@@ -169,10 +176,20 @@ public class DownloadManager {
 
             // DON'T delete missions with storage issues - try to recover them
             if (mis.hasInvalidStorage() && mis.errCode != ERROR_PROGRESS_LOST) {
-                // Only delete if it's truly unrecoverable (not just progress lost)
-                if (mis.storage == null && mis.errCode != ERROR_PROGRESS_LOST) {
-                    //noinspection ResultOfMethodCallIgnored
+                if (mis.storage == null) {
                     sub.delete();
+                    continue;
+                }
+                if (mis.storage.isInvalid()) {
+                    Log.w(TAG, "Skipping mission with invalid storage: " + mis.storage.getName());
+                    mis.errCode = DownloadMission.ERROR_FILE_CREATION;
+                    mis.errObject = null;
+                    mis.threads = new Thread[0];
+                    mis.metadata = sub;
+                    mis.maxRetry = mPrefMaxRetry;
+                    mis.mHandler = mHandler;
+                    mis.context = ctx;
+                    mMissionsPending.add(mis);
                     continue;
                 }
             }
@@ -365,7 +382,7 @@ public class DownloadManager {
                 }
             }
         }
-        new Thread(() -> {
+        mExecutor.execute(() -> {
             for (DownloadMission mission : toDelete) {
                 synchronized (this) {
                     if (!mMissionsPending.contains(mission)) continue;
@@ -373,7 +390,7 @@ public class DownloadManager {
                 }
                 mission.delete();
             }
-        }).start();
+        });
     }
 
     public void deleteAllFetchMissions() {
@@ -387,7 +404,7 @@ public class DownloadManager {
                 }
             }
         }
-        new Thread(() -> {
+        mExecutor.execute(() -> {
             for (DownloadMission mission : toDelete) {
                 synchronized (this) {
                     if (!mMissionsPending.contains(mission)) continue;
@@ -395,7 +412,7 @@ public class DownloadManager {
                 }
                 mission.delete();
             }
-        }).start();
+        });
     }
 
     public void forgetMission(StoredFileHelper storage) {
@@ -586,12 +603,12 @@ public class DownloadManager {
         synchronized (this) {
             toStart = new ArrayList<>(mMissionsPending);
         }
-        new Thread(() -> {
+        mExecutor.execute(() -> {
             for (DownloadMission mission : toStart) {
                 if (mission.running || mission.isCorrupt()) continue;
                 mission.start();
             }
-        }).start();
+        });
     }
 
 public void retryAllErrorMissions() {
@@ -599,7 +616,7 @@ public void retryAllErrorMissions() {
         synchronized (this) {
             toRetry = new ArrayList<>(mMissionsPending);
         }
-        new Thread(() -> {
+        mExecutor.execute(() -> {
             for (DownloadMission mission : toRetry) {
                 if (mission.running) continue;
                 if (mission.errCode == DownloadMission.ERROR_NOTHING) continue;
@@ -618,7 +635,7 @@ public void retryAllErrorMissions() {
                     mission.start();
                 }
             }
-        }).start();
+        });
     }
 
     public void convertToPendingFetchMission(@NonNull DownloadMission mission) {

@@ -15,6 +15,7 @@ public class CircularFileWriter extends SharpStream {
     private final static int COPY_BUFFER_SIZE = 128 * 1024; // 128 KiB
     private final static int NOTIFY_BYTES_INTERVAL = 64 * 1024;// 64 KiB
     private final static int THRESHOLD_AUX_LENGTH = 15 * 1024 * 1024;// 15 MiB
+    private final static int MAX_WRITE_RETRIES = 5;
 
     private final OffsetChecker callback;
 
@@ -26,6 +27,7 @@ public class CircularFileWriter extends SharpStream {
 
     private BufferedFile out;
     private BufferedFile aux;
+    private byte[] copyBuffer;
 
     public CircularFileWriter(SharpStream target, File temp, OffsetChecker checker) throws IOException {
         Objects.requireNonNull(checker);
@@ -53,7 +55,7 @@ public class CircularFileWriter extends SharpStream {
         aux.flush();
 
         boolean underflow = aux.offset < aux.length || out.offset < out.length;
-        byte[] buffer = new byte[COPY_BUFFER_SIZE];
+        byte[] buffer = getCopyBuffer();
 
         aux.target.seek(0);
         out.target.seek(out.length);
@@ -74,7 +76,6 @@ public class CircularFileWriter extends SharpStream {
 
         if (underflow) {
             if (out.offset >= out.length) {
-                // calculate the aux underflow pointer
                 if (aux.offset < amount) {
                     out.offset += aux.offset;
                     aux.offset = 0;
@@ -98,15 +99,19 @@ public class CircularFileWriter extends SharpStream {
         }
 
         if (amount < aux.length) {
-            // move the excess data to the beginning of the file
             long readOffset = amount;
             long writeOffset = 0;
 
             aux.length -= amount;
             length = aux.length;
+            long moved = 0;
             while (length > 0) {
                 int read = (int) Math.min(length, Integer.MAX_VALUE);
                 read = aux.target.read(buffer, 0, Math.min(read, buffer.length));
+
+                if (read < 1) {
+                    break;
+                }
 
                 aux.target.seek(writeOffset);
                 aux.writeProof(buffer, read);
@@ -114,10 +119,12 @@ public class CircularFileWriter extends SharpStream {
                 writeOffset += read;
                 readOffset += read;
                 length -= read;
+                moved += read;
 
                 aux.target.seek(readOffset);
             }
 
+            aux.length = moved;
             aux.target.setLength(aux.length);
             return;
         }
@@ -349,6 +356,13 @@ public class CircularFileWriter extends SharpStream {
     }
     //</editor-fold>
 
+    private byte[] getCopyBuffer() {
+        if (copyBuffer == null) {
+            copyBuffer = new byte[COPY_BUFFER_SIZE];
+        }
+        return copyBuffer;
+    }
+
     public interface OffsetChecker {
 
         /**
@@ -458,13 +472,13 @@ public class CircularFileWriter extends SharpStream {
                 return;
             }
 
-            while (true) {
+            for (int retry = 0; retry < MAX_WRITE_RETRIES; retry++) {
                 try {
                     target.write(buffer, 0, length);
                     return;
                 } catch (Exception e) {
-                    if (!onWriteError.handle(e)) {
-                        throw e;// give up
+                    if (retry >= MAX_WRITE_RETRIES - 1 || !onWriteError.handle(e)) {
+                        throw e;
                     }
                 }
             }
