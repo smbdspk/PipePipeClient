@@ -12,6 +12,7 @@ import org.schabi.newpipe.streams.io.StoredDirectoryHelper;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
 import org.schabi.newpipe.util.ListHelper;
 import org.schabi.newpipe.util.SecondaryStreamHelper;
+import us.shandian.giga.util.BilibiliTempHelper;
 import org.schabi.newpipe.util.StreamItemAdapter;
 import us.shandian.giga.postprocessing.Postprocessing;
 import us.shandian.giga.service.DownloadManager;
@@ -130,9 +131,12 @@ public class DirectDownloader {
                 if (format == MediaFormat.WEBMA_OPUS) {
                     mimeTmp = "audio/ogg";
                     filenameTmp += "opus";
-                } else {
+                } else if (format != null) {
                     mimeTmp = format.mimeType;
                     filenameTmp += format.suffix;
+                } else {
+                    mimeTmp = "audio/mp4";
+                    filenameTmp += "m4a";
                 }
                 uri = PreferenceManager.getDefaultSharedPreferences(context).getString(context.getString(R.string.download_path_audio_key), "");
                 if (uri.isEmpty()) {
@@ -146,8 +150,13 @@ public class DirectDownloader {
                 break;
             case VIDEO:
                 format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
-                mimeTmp = format.mimeType;
-                filenameTmp += format.suffix;
+                if (format != null) {
+                    mimeTmp = format.mimeType;
+                    filenameTmp += format.suffix;
+                } else {
+                    mimeTmp = "video/mp4";
+                    filenameTmp += "mp4";
+                }
                 uri = PreferenceManager.getDefaultSharedPreferences(context).getString(context.getString(R.string.download_path_video_key), "");
                 if (uri.isEmpty()) {
                     throw new RuntimeException("No download path selected");
@@ -166,7 +175,7 @@ public class DirectDownloader {
         String filename = filenameTmp;
         String mime = mimeTmp;
         if (targetFile != null) {
-            return;
+            throw new RuntimeException("File already exists: " + filename);
         }
         if (!mainStorage.mkdirs()) {
             // the directory does not exist and we can't create it
@@ -179,8 +188,7 @@ public class DirectDownloader {
         }
 
         if(currentInfo.getServiceId() == ServiceList.BiliBili.getServiceId() && type == DownloadType.VIDEO){
-            mainStorage.createFile(filename.replace(".mp4", ".tmp.mp4"), "video/mp4");
-            mainStorage.createFile(filename.replace(".mp4", ".tmp"), String.valueOf(MediaFormat.M4A));
+            BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
         }
 
         startDownload(storage);

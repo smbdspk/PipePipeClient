@@ -93,6 +93,7 @@ import us.shandian.giga.service.DownloadManager;
 import us.shandian.giga.service.DownloadManagerService;
 import us.shandian.giga.service.DownloadManagerService.DownloadManagerBinder;
 import us.shandian.giga.service.MissionState;
+import us.shandian.giga.util.BilibiliTempHelper;
 
 import static org.schabi.newpipe.util.Localization.assureCorrectAppLanguage;
 
@@ -278,7 +279,8 @@ public class DownloadDialog extends DialogFragment
                         .append(i, new SecondaryStreamHelper<>(wrappedAudioStreams, audioStream));
             } else if (DEBUG) {
                 Log.w(TAG, "No audio stream candidates for video format "
-                        + videoStreams.get(i).getFormat().name());
+                        + (videoStreams.get(i).getFormat() != null
+                                ? videoStreams.get(i).getFormat().name() : "null"));
             }
         }
 
@@ -330,7 +332,7 @@ public class DownloadDialog extends DialogFragment
 
         prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
         final String template = prefs.getString(getString(R.string.download_filename_template_key), getString(R.string.download_filename_template_default_value));
-        dialogBinding.fileName.setText(FilenameUtils.buildFilename(template, currentInfo));
+        dialogBinding.fileName.setText(FilenameUtils.buildFilename(context, template, currentInfo));
         selectedAudioIndex = ListHelper
                 .getDefaultAudioFormat(getContext(), wrappedAudioStreams.getStreamsList());
 
@@ -629,7 +631,7 @@ public class DownloadDialog extends DialogFragment
 
     private void onItemSelectedSetFileName() {
         final String template = prefs.getString(getString(R.string.download_filename_template_key), getString(R.string.download_filename_template_default_value));
-        final String fileName = FilenameUtils.buildFilename(template, currentInfo);
+        final String fileName = FilenameUtils.buildFilename(context, template, currentInfo);
         final String prevFileName = Optional.ofNullable(dialogBinding.fileName.getText())
                 .map(Object::toString)
                 .orElse("");
@@ -743,7 +745,7 @@ public class DownloadDialog extends DialogFragment
 
         if (str.isEmpty()) {
             final String template = prefs.getString(getString(R.string.download_filename_template_key), getString(R.string.download_filename_template_default_value));
-            return FilenameUtils.buildFilename(template, currentInfo);
+            return FilenameUtils.buildFilename(context, template, currentInfo);
         }
         return FilenameUtils.createFilename(context, str);
     }
@@ -777,32 +779,48 @@ public class DownloadDialog extends DialogFragment
 
         filenameTmp = getNameEditText().concat(".");
 
-        final int checkedId = dialogBinding.videoAudioGroup.getCheckedRadioButtonId();
-        if (checkedId == R.id.audio_button) {
-            selectedMediaType = getString(R.string.last_download_type_audio_key);
-            mainStorage = mainStorageAudio;
-            format = audioStreamsAdapter.getItem(selectedAudioIndex).getFormat();
-            if (format == MediaFormat.WEBMA_OPUS) {
-                mimeTmp = "audio/ogg";
-                filenameTmp += "opus";
-            } else {
-                mimeTmp = format.mimeType;
-                filenameTmp += format.suffix;
-            }
-        } else if (checkedId == R.id.video_button) {
-            selectedMediaType = getString(R.string.last_download_type_video_key);
-            mainStorage = mainStorageVideo;
-            format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
-            mimeTmp = format.mimeType;
-            filenameTmp += format.suffix;
-        } else if (checkedId == R.id.subtitle_button) {
-            selectedMediaType = getString(R.string.last_download_type_subtitle_key);
-            mainStorage = mainStorageVideo;
-            format = subtitleStreamsAdapter.getItem(selectedSubtitleIndex).getFormat();
-            mimeTmp = format.mimeType;
-            filenameTmp += (format == MediaFormat.TTML ? MediaFormat.SRT : format).suffix;
-        } else {
-            throw new RuntimeException("No stream selected");
+        switch (dialogBinding.videoAudioGroup.getCheckedRadioButtonId()) {
+            case R.id.audio_button:
+                selectedMediaType = getString(R.string.last_download_type_audio_key);
+                mainStorage = mainStorageAudio;
+                format = audioStreamsAdapter.getItem(selectedAudioIndex).getFormat();
+                if (format == MediaFormat.WEBMA_OPUS) {
+                    mimeTmp = "audio/ogg";
+                    filenameTmp += "opus";
+                } else if (format != null) {
+                    mimeTmp = format.mimeType;
+                    filenameTmp += format.suffix;
+                } else {
+                    mimeTmp = "audio/mp4";
+                    filenameTmp += "m4a";
+                }
+                break;
+            case R.id.video_button:
+                selectedMediaType = getString(R.string.last_download_type_video_key);
+                mainStorage = mainStorageVideo;
+                format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
+                if (format != null) {
+                    mimeTmp = format.mimeType;
+                    filenameTmp += format.suffix;
+                } else {
+                    mimeTmp = "video/mp4";
+                    filenameTmp += "mp4";
+                }
+                break;
+            case R.id.subtitle_button:
+                selectedMediaType = getString(R.string.last_download_type_subtitle_key);
+                mainStorage = mainStorageVideo; // subtitle & video files go together
+                format = subtitleStreamsAdapter.getItem(selectedSubtitleIndex).getFormat();
+                if (format != null) {
+                    mimeTmp = format.mimeType;
+                    filenameTmp += (format == MediaFormat.TTML ? MediaFormat.SRT : format).suffix;
+                } else {
+                    mimeTmp = "text/vtt";
+                    filenameTmp += "vtt";
+                }
+                break;
+            default:
+                throw new RuntimeException("No stream selected");
         }
 
         if (!askForSavePath
@@ -908,52 +926,7 @@ public class DownloadDialog extends DialogFragment
                 msgBody = R.string.download_already_running;
                 break;
             case None: // there is no mission referring to the same file
-                if (mainStorage == null) {
-                    // This part is called if:
-                    // * using SAF on older android version
-                    // * save path not defined
-                    // * if the file exists overwrite it, is not necessary ask
-                    if (!storage.existsAsFile() && !storage.create()) {
-                        showFailedDialog(R.string.error_file_creation);
-                        return;
-                    }
-                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-                    continueSelectedDownload(storage);
-                    return;
-                } else if (targetFile == null) {
-                    // Double-check: SAF findFile() can miss existing files (especially on Bilibili).
-                    // Ask the user to confirm overwrite if the file actually exists.
-                    if (mainStorage.fileExists(filename)) {
-                        // file exists on disk but wasn't caught by findFile() — fall through to overwrite dialog
-                        msgBtn = R.string.overwrite;
-                        msgBody = R.string.overwrite_unrelated_warning;
-                        // do NOT return — let execution continue to the AlertDialog builder below
-                        break; // break out of switch, fall through to dialog
-                    }
-
-                    // This part is called if:
-                    // * the filename is not used in a pending/finished download
-                    // * the file does not exists, create
-
-                    if (!mainStorage.mkdirs()) {
-                        showFailedDialog(R.string.error_path_creation);
-                        return;
-                    }
-
-                    storage = mainStorage.createFile(filename, mime);
-                    if (storage == null || !storage.canWrite()) {
-                        showFailedDialog(R.string.error_file_creation);
-                        return;
-                    }
-
-                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-                    continueSelectedDownload(storage);
-                    // Note: This Bilibili sidecar creation must execute for both the new-file path
-                    // AND the overwrite-confirmed path below to ensure temp files are properly handled.
-                    if(currentInfo.getService() == ServiceList.BiliBili && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button){
-                        mainStorage.createFile(filename.replace(".mp4", ".tmp.mp4"), "video/mp4");
-                        mainStorage.createFile(filename.replace(".mp4", ".tmp"), String.valueOf(MediaFormat.M4A));
-                    }
+                if (handleNoExistingMission(mainStorage, targetFile, filename, mime, storage)) {
                     return;
                 }
                 msgBtn = R.string.overwrite;
@@ -971,9 +944,6 @@ public class DownloadDialog extends DialogFragment
 
 
         if (mainStorage == null) {
-            // This part is called if:
-            // * using SAF on older android version
-            // * save path not defined
             switch (state) {
                 case Pending:
                 case Finished:
@@ -992,51 +962,7 @@ public class DownloadDialog extends DialogFragment
 
         DialogInterface.OnClickListener actionListener = (dialog, which) -> {
             dialog.dismiss();
-
-            StoredFileHelper storageNew;
-            switch (state) {
-                case Finished:
-                case Pending:
-                    downloadManager.forgetMission(finalStorage);
-                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-                case None:
-                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-                    if (targetFile == null) {
-                        storageNew = mainStorage.createFile(filename, mime);
-                    } else {
-                        try {
-                            // try take (or steal) the file
-                            storageNew = new StoredFileHelper(context, mainStorage.getUri(),
-                                    targetFile, mainStorage.getTag());
-                        } catch (final IOException e) {
-                            Log.e(TAG, "Failed to take (or steal) the file in "
-                                    + targetFile.toString());
-                            storageNew = null;
-                        }
-                    }
-
-                    if (storageNew != null && storageNew.canWrite()) {
-//                        mainStorage.remove(filename);
-                        // Note: This Bilibili sidecar creation must execute for both the new-file path
-                        // AND the overwrite-confirmed path to ensure temp files are properly handled.
-                        if(currentInfo.getService() == ServiceList.BiliBili && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button){
-                            mainStorage.createFile(filename.replace(".mp4", ".tmp.mp4"), "video/mp4");
-                            mainStorage.createFile(filename.replace(".mp4", ".tmp"), String.valueOf(MediaFormat.M4A));
-                        }
-                        continueSelectedDownload(storageNew);
-                    } else {
-                        showFailedDialog(R.string.error_file_creation);
-                    }
-                    break;
-                case PendingRunning:
-                    storageNew = mainStorage.createUniqueFile(filename, mime);
-                    if (storageNew == null) {
-                        showFailedDialog(R.string.error_file_creation);
-                    } else {
-                        continueSelectedDownload(storageNew);
-                    }
-                    break;
-            }
+            handleOverwriteAction(state, finalStorage, mainStorage, targetFile, filename, mime);
         };
 
         if (state == MissionState.None) {
@@ -1058,6 +984,91 @@ public class DownloadDialog extends DialogFragment
             askDialog.setPositiveButton(msgBtn, actionListener);
         }
         askDialog.create().show();
+    }
+
+    private boolean handleNoExistingMission(final StoredDirectoryHelper mainStorage,
+                                             final Uri targetFile, final String filename,
+                                             final String mime, final StoredFileHelper storage) {
+        if (mainStorage == null) {
+            if (!storage.existsAsFile() && !storage.create()) {
+                showFailedDialog(R.string.error_file_creation);
+                return true;
+            }
+            downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+            continueSelectedDownload(storage);
+            return true;
+        } else if (targetFile == null) {
+            if (mainStorage.fileExists(filename)) {
+                return false;
+            }
+
+            if (!mainStorage.mkdirs()) {
+                showFailedDialog(R.string.error_path_creation);
+                return true;
+            }
+
+            StoredFileHelper newStorage = mainStorage.createFile(filename, mime);
+            if (newStorage == null || !newStorage.canWrite()) {
+                showFailedDialog(R.string.error_file_creation);
+                return true;
+            }
+
+            downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+            if (currentInfo.getService() == ServiceList.BiliBili
+                    && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button) {
+                BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
+            }
+            continueSelectedDownload(newStorage);
+            return true;
+        }
+        return false;
+    }
+
+    private void handleOverwriteAction(final MissionState state,
+                                        final StoredFileHelper finalStorage,
+                                        final StoredDirectoryHelper mainStorage,
+                                        final Uri targetFile, final String filename,
+                                        final String mime) {
+        StoredFileHelper storageNew;
+        switch (state) {
+            case Finished:
+            case Pending:
+                downloadManager.forgetMission(finalStorage);
+                downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+            case None:
+                downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+                if (targetFile == null) {
+                    storageNew = mainStorage.createFile(filename, mime);
+                } else {
+                    try {
+                        storageNew = new StoredFileHelper(context, mainStorage.getUri(),
+                                targetFile, mainStorage.getTag());
+                    } catch (final IOException e) {
+                        Log.e(TAG, "Failed to take (or steal) the file in "
+                                + targetFile.toString());
+                        storageNew = null;
+                    }
+                }
+
+                if (storageNew != null && storageNew.canWrite()) {
+                    if (currentInfo.getService() == ServiceList.BiliBili
+                            && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button) {
+                        BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
+                    }
+                    continueSelectedDownload(storageNew);
+                } else {
+                    showFailedDialog(R.string.error_file_creation);
+                }
+                break;
+            case PendingRunning:
+                storageNew = mainStorage.createUniqueFile(filename, mime);
+                if (storageNew == null) {
+                    showFailedDialog(R.string.error_file_creation);
+                } else {
+                    continueSelectedDownload(storageNew);
+                }
+                break;
+        }
     }
 
     private void continueSelectedDownload(@NonNull final StoredFileHelper storage) {
@@ -1091,81 +1102,86 @@ public class DownloadDialog extends DialogFragment
         long nearLength = 0;
 
         // more download logic: select muxer, subtitle converter, etc.
-        final int checkedId3 = dialogBinding.videoAudioGroup.getCheckedRadioButtonId();
-        if (checkedId3 == R.id.audio_button) {
-            kind = 'a';
-            selectedStream = audioStreamsAdapter.getItem(selectedAudioIndex);
-            if (currentInfo.getService() == ServiceList.NicoNico) {
-                psName = Postprocessing.NICONICO_MUXER;
-            } else if (selectedStream.getFormat() == MediaFormat.M4A && currentInfo.getService() != ServiceList.BiliBili) {
-                psName = Postprocessing.ALGORITHM_M4A_NO_DASH;
-            } else if (selectedStream.getFormat() == MediaFormat.WEBMA_OPUS) {
-                psName = Postprocessing.ALGORITHM_OGG_FROM_WEBM_DEMUXER;
-            }
-        } else if (checkedId3 == R.id.video_button) {
-            kind = 'v';
-            selectedStream = videoStreamsAdapter.getItem(selectedVideoIndex);
-
-            final SecondaryStreamHelper<AudioStream> secondary = videoStreamsAdapter
-                    .getAllSecondary()
-                    .get(wrappedVideoStreams.getStreamsList().indexOf(selectedStream));
-
-            if (secondary != null) {
-                secondaryStream = secondary.getStream();
-
-                if(currentInfo.getService() == ServiceList.BiliBili) {
-                    psName = Postprocessing.BILIBILI_MUXER;
-                } else if (currentInfo.getService() == ServiceList.NicoNico) {
+        switch (dialogBinding.videoAudioGroup.getCheckedRadioButtonId()) {
+            case R.id.audio_button:
+                kind = 'a';
+                selectedStream = audioStreamsAdapter.getItem(selectedAudioIndex);
+                if (currentInfo.getService() == ServiceList.NicoNico) {
                     psName = Postprocessing.NICONICO_MUXER;
-                } else {
-                    if (selectedStream.getFormat() == MediaFormat.MPEG_4) {
-                        psName = Postprocessing.ALGORITHM_MP4_FROM_DASH_MUXER;
+                } else if (selectedStream.getFormat() == MediaFormat.M4A && currentInfo.getService() != ServiceList.BiliBili) {
+                    psName = Postprocessing.ALGORITHM_M4A_NO_DASH;
+                } else if (selectedStream.getFormat() == MediaFormat.WEBMA_OPUS) {
+                    psName = Postprocessing.ALGORITHM_OGG_FROM_WEBM_DEMUXER;
+                }
+                break;
+            case R.id.video_button:
+                kind = 'v';
+                selectedStream = videoStreamsAdapter.getItem(selectedVideoIndex);
+
+                final SecondaryStreamHelper<AudioStream> secondary = videoStreamsAdapter
+                        .getAllSecondary()
+                        .get(wrappedVideoStreams.getStreamsList().indexOf(selectedStream));
+
+                if (secondary != null) {
+                    secondaryStream = secondary.getStream();
+
+                    if(currentInfo.getService() == ServiceList.BiliBili) {
+                        psName = Postprocessing.BILIBILI_MUXER;
+                    } else if (currentInfo.getService() == ServiceList.NicoNico) {
+                        psName = Postprocessing.NICONICO_MUXER;
                     } else {
-                        psName = Postprocessing.ALGORITHM_WEBM_MUXER;
+                        if (selectedStream.getFormat() == MediaFormat.MPEG_4) {
+                            psName = Postprocessing.ALGORITHM_MP4_FROM_DASH_MUXER;
+                        } else {
+                            psName = Postprocessing.ALGORITHM_WEBM_MUXER;
+                        }
+                    }
+
+                    psArgs = null;
+                    final long videoSize = wrappedVideoStreams
+                            .getSizeInBytes((VideoStream) selectedStream);
+
+                    // set nearLength, only, if both sizes are fetched or known. This probably
+                    // does not work on slow networks but is later updated in the downloader
+                    if (secondary.getSizeInBytes() > 0 && videoSize > 0) {
+                        nearLength = secondary.getSizeInBytes() + videoSize;
                     }
                 }
+                break;
+            case R.id.subtitle_button:
+                threads = 1;
+                kind = 's';
+                selectedStream = subtitleStreamsAdapter.getItem(selectedSubtitleIndex);
+                if(!selectedStream.isUrl()){
+                    try {
+                        String content = selectedStream.getContent();
+                        if (selectedStream.getFormat() == MediaFormat.TTML) {
+                            content = SrtFromTtmlWriter.convertTtmlToSrt(content);
+                        }
+                        OutputStream outputStream = storage.context.getContentResolver().openOutputStream(storage.getUri());
+                        outputStream.write(content.getBytes());
+                        outputStream.close();
+                        Toast.makeText(context, getString(R.string.subtitle_saved),
+                                Toast.LENGTH_SHORT).show();
 
-                psArgs = null;
-                final long videoSize = wrappedVideoStreams
-                        .getSizeInBytes((VideoStream) selectedStream);
-
-                // set nearLength, only, if both sizes are fetched or known. This probably
-                // does not work on slow networks but is later updated in the downloader
-                if (secondary.getSizeInBytes() > 0 && videoSize > 0) {
-                    nearLength = secondary.getSizeInBytes() + videoSize;
-                }
-            }
-        } else if (checkedId3 == R.id.subtitle_button) {
-            threads = 1;
-            kind = 's';
-            selectedStream = subtitleStreamsAdapter.getItem(selectedSubtitleIndex);
-            if(!selectedStream.isUrl()){
-                try {
-                    String content = selectedStream.getContent();
-                    if (selectedStream.getFormat() == MediaFormat.TTML) {
-                        content = SrtFromTtmlWriter.convertTtmlToSrt(content);
+                        dismiss();
+                        return;
+                    } catch (IOException e) {
+                        ErrorUtil.createNotification(requireContext(),
+                                new ErrorInfo(e, UserAction.DOWNLOAD_FAILED, "Saving subtitle"));
+                        return;
                     }
-                    OutputStream outputStream = storage.context.getContentResolver().openOutputStream(storage.getUri());
-                    outputStream.write(content.getBytes());
-                    outputStream.close();
-                    Toast.makeText(context, getString(R.string.recaptcha_done_button),
-                            Toast.LENGTH_SHORT).show();
-
-                    dismiss();
-                    return;
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
                 }
-            }
-            if (selectedStream.getFormat() == MediaFormat.TTML) {
-                psName = Postprocessing.ALGORITHM_TTML_CONVERTER;
-                psArgs = new String[]{
-                        selectedStream.getFormat().getSuffix(),
-                        "false"
-                };
-            }
-        } else {
-            return;
+                if (selectedStream.getFormat() == MediaFormat.TTML) {
+                    psName = Postprocessing.ALGORITHM_TTML_CONVERTER;
+                    psArgs = new String[]{
+                            selectedStream.getFormat().getSuffix(),
+                            "false" // ignore empty frames
+                    };
+                }
+                break;
+            default:
+                return;
         }
 
         if (secondaryStream == null) {
@@ -1183,7 +1199,6 @@ public class DownloadDialog extends DialogFragment
             recoveryInfo = new MissionRecoveryInfo[]{new MissionRecoveryInfo(selectedStream),
                     new MissionRecoveryInfo(secondaryStream)};
         }
-        
 
         resourceDeliveryMethods = HlsDownloadStreamHelper
                 .buildResourceDeliveryMethods(selectedStream, secondaryStream);

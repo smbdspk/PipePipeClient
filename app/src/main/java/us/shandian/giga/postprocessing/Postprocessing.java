@@ -21,7 +21,7 @@ import us.shandian.giga.io.ProgressReport;
 import static us.shandian.giga.get.DownloadMission.ERROR_NOTHING;
 import static us.shandian.giga.get.DownloadMission.ERROR_POSTPROCESSING;
 import static us.shandian.giga.get.DownloadMission.ERROR_POSTPROCESSING_HOLD;
-import static us.shandian.giga.util.Utility.removeTempFileOfDownloadedVideo;
+import us.shandian.giga.util.BilibiliTempHelper;
 
 public abstract class Postprocessing implements Serializable {
 
@@ -210,7 +210,7 @@ public abstract class Postprocessing implements Serializable {
                     tempFile = null;
                 }
                 if(target.psAlgorithm.name == BILIBILI_MUXER){
-                    removeTempFileOfDownloadedVideo(target.storage);
+                    BilibiliTempHelper.cleanupSidecarFilesFileIO(target.storage);
                 }
 
             }

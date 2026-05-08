@@ -161,6 +161,7 @@ public class DownloadMissionRecover extends Thread {
                 for (VideoStream video : videoStreams) {
                     if (video.resolution.equals(mRecovery.getDesired()) && video.getFormat() == mRecovery.getFormat()) {
                         resolvedStream = video;
+                        break;
                     }
                 }
                 if (resolvedStream == null

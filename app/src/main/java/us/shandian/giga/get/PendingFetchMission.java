@@ -30,6 +30,7 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
 import us.shandian.giga.postprocessing.Postprocessing;
 import us.shandian.giga.service.DownloadManager;
 import us.shandian.giga.service.DownloadManagerService;
+import us.shandian.giga.util.BilibiliTempHelper;
 import us.shandian.giga.util.Utility;
 
 public class PendingFetchMission extends DownloadMission {
@@ -256,20 +257,56 @@ public class PendingFetchMission extends DownloadMission {
         }
 
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-
         final String template = prefs.getString(
                 context.getString(R.string.download_filename_template_key),
                 context.getString(R.string.download_filename_template_default_value));
-        final String baseName = FilenameUtils.buildFilename(template, info);
+        final String baseName = FilenameUtils.buildFilename(context, template, info);
 
-        final Stream primary;
+        final StreamResolution resolution = resolveStreams(info);
+        final String ext = resolveExtension(resolution.primary);
+        final String fullFilename = baseName + "." + ext;
+        final String mime = resolveMime(resolution.primary);
+
+        final StoredDirectoryHelper dir = openStorageDir();
+        if (dir == null) {
+            throw new IOException("Download folder not configured");
+        }
+
+        final StoredFileHelper storage = createStorage(dir, fullFilename, mime, info.getUrl());
+        if (storage == null) {
+            return null;
+        }
+
+        String bilibiliTmpBase = setupBilibiliPostprocessing(dir, fullFilename, resolution, info);
+
+        final String[] urls;
+        final MissionRecoveryInfo[] recoveryInfo;
+        if (resolution.secondary == null) {
+            urls = new String[]{resolution.primary.getContent()};
+            recoveryInfo = new MissionRecoveryInfo[]{new MissionRecoveryInfo(resolution.primary)};
+        } else {
+            urls = new String[]{resolution.primary.getContent(), resolution.secondary.getContent()};
+            recoveryInfo = new MissionRecoveryInfo[]{
+                    new MissionRecoveryInfo(resolution.primary),
+                    new MissionRecoveryInfo(resolution.secondary)
+            };
+        }
+
+        try {
+            applyResolvedState(resolution, urls, recoveryInfo, storage, kindFromStream(info, resolution), mime, prefs);
+            return bilibiliTmpBase;
+        } catch (final Exception e) {
+            cleanupBilibiliTempFiles(bilibiliTmpBase);
+            throw e;
+        }
+    }
+
+    private StreamResolution resolveStreams(@NonNull final StreamInfo info) throws IOException {
+        Stream primary;
         Stream secondary = null;
-        final char kind;
         String psName = null;
-        String[] psArgs = null;
 
         if (audioOnly) {
-            kind = 'a';
             final List<AudioStream> downloadableAudio =
                     ListHelper.filterDownloadableAudioStreams(info.getAudioStreams());
             if (downloadableAudio.isEmpty()) {
@@ -287,7 +324,6 @@ public class PendingFetchMission extends DownloadMission {
                 psName = Postprocessing.ALGORITHM_OGG_FROM_WEBM_DEMUXER;
             }
         } else {
-            kind = 'v';
             final List<VideoStream> sortedVideoStreams = ListHelper.getSortedStreamVideosList(
                     context, info.getVideoStreams(), info.getVideoOnlyStreams(),
                     false, true);
@@ -301,7 +337,7 @@ public class PendingFetchMission extends DownloadMission {
             final VideoStream videoStream = sortedVideoStreams.get(videoIdx < 0 ? 0 : videoIdx);
             primary = videoStream;
 
-            if (videoStream.isVideoOnly()) {
+            if (videoStream.isVideoOnly() && videoStream.getFormat() != null) {
                 final List<AudioStream> downloadableAudio =
                         ListHelper.filterDownloadableAudioStreams(info.getAudioStreams());
                 if (!downloadableAudio.isEmpty()) {
@@ -323,17 +359,14 @@ public class PendingFetchMission extends DownloadMission {
             }
         }
 
-        final String ext = resolveExtension(primary);
-        final String fullFilename = baseName + "." + ext;
-        final String mime = resolveMime(primary);
+        return new StreamResolution(primary, secondary, psName, null);
+    }
 
-        final StoredDirectoryHelper dir = openStorageDir();
-        if (dir == null) {
-            throw new IOException("Download folder not configured");
-        }
-
-        final StoredFileHelper storage;
-
+    @Nullable
+    private StoredFileHelper createStorage(@NonNull final StoredDirectoryHelper dir,
+                                           @NonNull final String fullFilename,
+                                           @NonNull final String mime,
+                                           @NonNull final String sourceUrl) throws IOException {
         switch (existingFileBehavior) {
             case BEHAVIOR_SKIP:
                 if (dir.fileExists(fullFilename)) {
@@ -342,50 +375,52 @@ public class PendingFetchMission extends DownloadMission {
                     return null;
                 }
                 if (downloadManager != null) {
-                    downloadManager.forgetMissionsBySource(info.getUrl(), this);
+                    downloadManager.forgetMissionsBySource(sourceUrl, this);
                 }
-                storage = dir.createFile(fullFilename, mime);
-                break;
+                return dir.createFile(fullFilename, mime);
             case BEHAVIOR_UNIQUE_NAME:
-                storage = dir.createUniqueFile(fullFilename, mime);
-                break;
+                return dir.createUniqueFile(fullFilename, mime);
             case BEHAVIOR_OVERWRITE:
             default:
-                storage = dir.createFile(fullFilename, mime);
+                final StoredFileHelper storage = dir.createFile(fullFilename, mime);
                 if (downloadManager != null) {
                     downloadManager.forgetMission(storage);
-                    downloadManager.forgetMissionsBySource(info.getUrl(), this);
+                    downloadManager.forgetMissionsBySource(sourceUrl, this);
                 }
-                break;
+                return storage;
         }
+    }
 
-        if (storage == null || !storage.canWrite()) {
-            throw new IOException("Cannot write to storage for " + fullFilename);
-        }
-
-        String bilibiliTmpBase = null;
-        if (psName != null && secondary != null
+    @Nullable
+    private String setupBilibiliPostprocessing(@NonNull final StoredDirectoryHelper dir,
+                                                 @NonNull final String fullFilename,
+                                                 @NonNull final StreamResolution resolution,
+                                                 @NonNull final StreamInfo info) {
+        if (resolution.psName != null && resolution.secondary != null
                 && !audioOnly && info.getService() == ServiceList.BiliBili) {
-            bilibiliTmpBase = fullFilename;
-            dir.createFile(fullFilename.replace(".mp4", ".tmp.mp4"), "video/mp4");
-            dir.createFile(fullFilename.replace(".mp4", ".tmp"),
-                    String.valueOf(MediaFormat.M4A));
+            BilibiliTempHelper.createSidecarFiles(dir, fullFilename);
+            return fullFilename;
         }
+        return null;
+    }
 
-        final String[] urls;
-        final MissionRecoveryInfo[] recoveryInfo;
-        if (secondary == null) {
-            urls = new String[]{primary.getContent()};
-            recoveryInfo = new MissionRecoveryInfo[]{new MissionRecoveryInfo(primary)};
-        } else {
-            urls = new String[]{primary.getContent(), secondary.getContent()};
-            recoveryInfo = new MissionRecoveryInfo[]{
-                    new MissionRecoveryInfo(primary),
-                    new MissionRecoveryInfo(secondary)
-            };
+    private char kindFromStream(@NonNull final StreamInfo info, @NonNull final StreamResolution resolution) {
+        if (audioOnly) return 'a';
+
+        if (resolution.primary instanceof VideoStream) {
+            return 'v';
         }
+        return 'v';
+    }
 
-        this.source = info.getUrl();
+    private void applyResolvedState(@NonNull final StreamResolution resolution,
+                                     @NonNull final String[] urls,
+                                     @NonNull final MissionRecoveryInfo[] recoveryInfo,
+                                     @NonNull final StoredFileHelper storage,
+                                     final char kind,
+                                     @NonNull final String mime,
+                                     @NonNull final SharedPreferences prefs) {
+        this.source = sourceUrl;
         this.urls = urls;
         this.offsets = new long[urls.length];
         this.kind = kind;
@@ -395,8 +430,8 @@ public class PendingFetchMission extends DownloadMission {
         this.threadCount = prefs.getInt(
                 context.getString(R.string.default_download_threads), 3);
 
-        if (psName != null) {
-            this.psAlgorithm = Postprocessing.getAlgorithm(psName, psArgs);
+        if (resolution.psName != null) {
+            this.psAlgorithm = Postprocessing.getAlgorithm(resolution.psName, resolution.psArgs);
             this.psAlgorithm.setTemporalDir(DownloadManager.pickAvailableTemporalDir(context));
         }
 
@@ -409,8 +444,6 @@ public class PendingFetchMission extends DownloadMission {
         writeThisToFile();
 
         super.start();
-
-        return bilibiliTmpBase;
     }
 
     @NonNull
@@ -441,10 +474,24 @@ public class PendingFetchMission extends DownloadMission {
         if (tmpBase == null) return;
         try {
             final StoredDirectoryHelper dir = openStorageDir();
-            if (dir != null) {
-                dir.remove(tmpBase.replace(".mp4", ".tmp.mp4"));
-                dir.remove(tmpBase.replace(".mp4", ".tmp"));
-            }
+            BilibiliTempHelper.cleanupSidecarFiles(dir, tmpBase);
         } catch (final Exception ignored) { }
+    }
+
+    static class StreamResolution {
+        final Stream primary;
+        @Nullable final Stream secondary;
+        @Nullable final String psName;
+        @Nullable final String[] psArgs;
+
+        StreamResolution(@NonNull Stream primary,
+                         @Nullable Stream secondary,
+                         @Nullable String psName,
+                         @Nullable String[] psArgs) {
+            this.primary = primary;
+            this.secondary = secondary;
+            this.psName = psName;
+            this.psArgs = psArgs;
+        }
     }
 }

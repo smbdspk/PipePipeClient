@@ -3,7 +3,6 @@ package us.shandian.giga.io;
 import android.content.ContentResolver;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 
@@ -57,7 +56,9 @@ public class FileStreamSAF extends SharpStream {
 
     @Override
     public long skip(long amount) throws IOException {
-        return in.skip(amount);// ¿or use channel.position(channel.position() + amount)?
+        long newPos = channel.position() + amount;
+        channel.position(newPos);
+        return amount;
     }
 
     @Override
@@ -76,16 +77,13 @@ public class FileStreamSAF extends SharpStream {
 
     @Override
     public void close() {
-        try {
-            disposed = true;
+        if (disposed) return;
+        disposed = true;
 
-            file.close();
-            in.close();
-            out.close();
-            channel.close();
-        } catch (IOException e) {
-            Log.e("FileStreamSAF", "close() error", e);
-        }
+        try { channel.close(); } catch (IOException ignored) {}
+        try { in.close(); } catch (IOException ignored) {}
+        try { out.close(); } catch (IOException ignored) {}
+        try { file.close(); } catch (IOException ignored) {}
     }
 
     @Override

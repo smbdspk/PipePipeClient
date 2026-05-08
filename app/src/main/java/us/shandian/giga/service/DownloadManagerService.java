@@ -271,21 +271,6 @@ public class DownloadManagerService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) {
-        /*
-        int permissionCheck;
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN) {
-            permissionCheck = PermissionChecker.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE);
-            if (permissionCheck == PermissionChecker.PERMISSION_DENIED) {
-                Toast.makeText(this, "Permission denied (read)", Toast.LENGTH_SHORT).show();
-            }
-        }
-
-        permissionCheck = PermissionChecker.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        if (permissionCheck == PermissionChecker.PERMISSION_DENIED) {
-            Toast.makeText(this, "Permission denied (write)", Toast.LENGTH_SHORT).show();
-        }
-        */
-
         return mBinder;
     }
 
@@ -319,6 +304,9 @@ public class DownloadManagerService extends Service {
                 break;
             case MESSAGE_PAUSED:
                 updateForegroundState(mManager.getRunningMissionsCount() > 0);
+                break;
+            case MESSAGE_DELETED:
+                removeFailedDownload(mission);
                 break;
         }
 
@@ -518,7 +506,10 @@ public class DownloadManagerService extends Service {
         int existingFileBehavior = intent.getIntExtra(EXTRA_EXISTING_FILE_BEHAVIOR,
                 PendingFetchMission.BEHAVIOR_SKIP);
 
-        if (sourceUrl == null || sourceName == null) return;
+        if (sourceUrl == null || sourceName == null) {
+            Log.e(TAG, "addPendingFetchMission: missing required extras (sourceUrl or sourceName)");
+            return;
+        }
 
         String tag = audioOnly ? DownloadManager.TAG_AUDIO : DownloadManager.TAG_VIDEO;
         StoredFileHelper placeholderStorage = new StoredFileHelper(null,
@@ -612,6 +603,14 @@ public class DownloadManagerService extends Service {
                 .bigText(mission.storage.getName()));
 
         mNotificationManager.notify(id, downloadFailedNotification.build());
+    }
+
+    private void removeFailedDownload(DownloadMission mission) {
+        int idx = mFailedDownloads.indexOfValue(mission);
+        if (idx >= 0) {
+            mNotificationManager.cancel(mFailedDownloads.keyAt(idx));
+            mFailedDownloads.removeAt(idx);
+        }
     }
 
     private void notifySkippedDownload(String name) {
