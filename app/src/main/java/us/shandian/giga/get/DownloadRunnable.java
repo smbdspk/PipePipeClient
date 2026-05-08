@@ -84,6 +84,20 @@ public class DownloadRunnable extends Thread {
                 mConn = mMission.openConnection(false, start, end);
                 mMission.establishConnection(mId, mConn);
 
+                String contentType = mConn.getContentType();
+                if (contentType != null) {
+                    String lower = contentType.toLowerCase();
+                    if (lower.startsWith("text/html")
+                            || lower.startsWith("application/json")
+                            || lower.startsWith("text/plain")) {
+                        f.close();
+                        if (mId == 1) {
+                            mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                        }
+                        return;
+                    }
+                }
+
                 // check if the download can be resumed
                 if (mConn.getResponseCode() == 416) {
                     if (block.done > 0) {

@@ -891,6 +891,7 @@ public class DownloadDialog extends DialogFragment
                         showFailedDialog(R.string.error_file_creation);
                         return;
                     }
+                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
                     continueSelectedDownload(storage);
                     return;
                 } else if (targetFile == null) {
@@ -919,6 +920,7 @@ public class DownloadDialog extends DialogFragment
                         return;
                     }
 
+                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
                     continueSelectedDownload(storage);
                     // Note: This Bilibili sidecar creation must execute for both the new-file path
                     // AND the overwrite-confirmed path below to ensure temp files are properly handled.
@@ -952,6 +954,7 @@ public class DownloadDialog extends DialogFragment
                     askDialog.setPositiveButton(msgBtn, (dialog, which) -> {
                         dialog.dismiss();
                         downloadManager.forgetMission(finalStorage);
+                        downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
                         continueSelectedDownload(finalStorage);
                     });
                     break;
@@ -969,7 +972,9 @@ public class DownloadDialog extends DialogFragment
                 case Finished:
                 case Pending:
                     downloadManager.forgetMission(finalStorage);
+                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
                 case None:
+                    downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
                     if (targetFile == null) {
                         storageNew = mainStorage.createFile(filename, mime);
                     } else {
@@ -1152,6 +1157,7 @@ public class DownloadDialog extends DialogFragment
             recoveryInfo = new MissionRecoveryInfo[]{new MissionRecoveryInfo(selectedStream),
                     new MissionRecoveryInfo(secondaryStream)};
         }
+        
 
         resourceDeliveryMethods = HlsDownloadStreamHelper
                 .buildResourceDeliveryMethods(selectedStream, secondaryStream);

@@ -71,6 +71,18 @@ public class DownloadRunnableFallback extends Thread {
 
             mMission.establishConnection(mId, mConn);
 
+            String contentType = mConn.getContentType();
+            if (contentType != null) {
+                String lower = contentType.toLowerCase();
+                if (lower.startsWith("text/html")
+                        || lower.startsWith("application/json")
+                        || lower.startsWith("text/plain")) {
+                    dispose();
+                    mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                    return;
+                }
+            }
+
             // check if the download can be resumed
             if (mConn.getResponseCode() == 416 && start > 0) {
                 mMission.notifyProgress(-start);

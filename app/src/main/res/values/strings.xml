@@ -1085,4 +1085,6 @@
 <string name="duration">Duration</string>
 <string name="license">License</string>
 <string name="published">Published</string>
+<string name="delete_errored_missions">Delete errored</string>
+<string name="delete_fetch_missions">Delete fetches</string>
 </resources>

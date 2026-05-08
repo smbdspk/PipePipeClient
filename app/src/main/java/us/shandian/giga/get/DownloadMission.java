@@ -727,6 +727,7 @@ public class DownloadMission extends Mission {
         }
 
         Exception exception = null;
+        boolean staleUrl = false;
 
         try {
             psAlgorithm.run(this);
@@ -738,11 +739,22 @@ public class DownloadMission extends Mission {
                 return;
             }
 
-            if (errCode == ERROR_NOTHING) errCode = ERROR_POSTPROCESSING;
-
-            exception = err;
+            if (err instanceof IOException && err.getMessage() != null
+                    && err.getMessage().contains("The chunk is empty or invalid")
+                    && this instanceof PendingFetchMission) {
+                staleUrl = true;
+            } else {
+                if (errCode == ERROR_NOTHING) errCode = ERROR_POSTPROCESSING;
+                exception = err;
+            }
         } finally {
             notifyPostProcessing(errCode == ERROR_NOTHING ? 2 : 0);
+        }
+
+        if (staleUrl) {
+            errCode = ERROR_NOTHING;
+            ((PendingFetchMission) this).refetch();
+            return;
         }
 
         if (errCode != ERROR_NOTHING) {

@@ -57,6 +57,8 @@ public class MissionsFragment extends Fragment {
     private MenuItem mStart = null;
     private MenuItem mPause = null;
     private MenuItem mRetry = null;
+    private MenuItem mDeleteErrored = null;
+    private MenuItem mDeleteFetches = null;
 
     private RecyclerView mList;
     private View mEmpty;
@@ -180,6 +182,8 @@ public class MissionsFragment extends Fragment {
         mStart = menu.findItem(R.id.start_downloads);
         mPause = menu.findItem(R.id.pause_downloads);
         mRetry = menu.findItem(R.id.retry_downloads);
+        mDeleteErrored = menu.findItem(R.id.delete_errored);
+        mDeleteFetches = menu.findItem(R.id.delete_fetches);
 
         if (mAdapter != null) setAdapterButtons();
 
@@ -205,6 +209,14 @@ public class MissionsFragment extends Fragment {
                 return true;
             case R.id.retry_downloads:
                 mBinder.getDownloadManager().retryAllErrorMissions();
+                mAdapter.refreshMissionItems();
+                return true;
+            case R.id.delete_errored:
+                mBinder.getDownloadManager().deleteAllErroredMissions();
+                mAdapter.refreshMissionItems();
+                return true;
+            case R.id.delete_fetches:
+                mBinder.getDownloadManager().deleteAllFetchMissions();
                 mAdapter.refreshMissionItems();
                 return true;
             default:
@@ -267,6 +279,7 @@ public class MissionsFragment extends Fragment {
 
         mAdapter.setClearButton(mClear);
         mAdapter.setMasterButtons(mStart, mPause, mRetry);
+        mAdapter.setUtilityButtons(mDeleteErrored, mDeleteFetches);
     }
 
     private void recoverMission(@NonNull DownloadMission mission) {
