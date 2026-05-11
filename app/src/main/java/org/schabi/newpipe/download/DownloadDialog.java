@@ -84,8 +84,11 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.stream.Collectors;
 
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import us.shandian.giga.get.HlsDownloadStreamHelper;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import us.shandian.giga.get.MissionRecoveryInfo;
 import us.shandian.giga.get.SabrDownloadStreamHelper;
 import us.shandian.giga.postprocessing.Postprocessing;
@@ -135,6 +138,26 @@ public class DownloadDialog extends DialogFragment
     // Variables for file name and MIME type when picking new folder because it's not set yet
     private String filenameTmp;
     private String mimeTmp;
+
+    private static class MissionCheckResult {
+        final MissionState state;
+        @Nullable final StoredFileHelper storage;
+        @Nullable final StoredDirectoryHelper mainStorage;
+        final String filename;
+        final String mime;
+        @Nullable final Uri targetFile;
+
+        MissionCheckResult(final MissionState state, @Nullable final StoredFileHelper storage,
+                           @Nullable final StoredDirectoryHelper mainStorage, final String filename,
+                           final String mime, @Nullable final Uri targetFile) {
+            this.state = state;
+            this.storage = storage;
+            this.mainStorage = mainStorage;
+            this.filename = filename;
+            this.mime = mime;
+            this.targetFile = targetFile;
+        }
+    }
 
     private final ActivityResultLauncher<Intent> requestDownloadSaveAsLauncher =
             registerForActivityResult(
@@ -535,7 +558,7 @@ public class DownloadDialog extends DialogFragment
 
         if (FilePickerActivityHelper.isOwnFileUri(context, result.getData().getData())) {
             final File file = Utils.getFileForUri(result.getData().getData());
-            checkSelectedDownload(null, Uri.fromFile(file), file.getName(),
+            checkSelectedDownloadAsync(null, Uri.fromFile(file), file.getName(),
                     StoredFileHelper.DEFAULT_MIME);
             return;
         }
@@ -548,7 +571,7 @@ public class DownloadDialog extends DialogFragment
         }
 
         // check if the selected file was previously used
-        checkSelectedDownload(null, result.getData().getData(), docFile.getName(),
+        checkSelectedDownloadAsync(null, result.getData().getData(), docFile.getName(),
                 docFile.getType());
     }
 
@@ -578,8 +601,7 @@ public class DownloadDialog extends DialogFragment
         try {
             final StoredDirectoryHelper mainStorage
                     = new StoredDirectoryHelper(context, uri, tag);
-            checkSelectedDownload(mainStorage, mainStorage.findFile(filenameTmp),
-                    filenameTmp, mimeTmp);
+            checkSelectedDownloadAsync(mainStorage, null, filenameTmp, mimeTmp);
         } catch (final IOException e) {
             showFailedDialog(R.string.general_error);
         }
@@ -868,52 +890,118 @@ public class DownloadDialog extends DialogFragment
             return;
         }
 
-        // check for existing file with the same name
-        checkSelectedDownload(mainStorage, mainStorage.findFile(filenameTmp), filenameTmp, mimeTmp);
+        if (mainStorage != null && mainStorage.isDirect()) {
+            if (tryStartDownloadSync(mainStorage, filenameTmp, mimeTmp)) {
+                prefs.edit().putString(getString(R.string.last_used_download_type),
+                        selectedMediaType).apply();
+                return;
+            }
+        }
 
-        // remember the last media type downloaded by the user
+        checkSelectedDownloadAsync(mainStorage, null, filenameTmp, mimeTmp);
+
         prefs.edit().putString(getString(R.string.last_used_download_type), selectedMediaType)
                 .apply();
     }
-
-    private void checkSelectedDownload(final StoredDirectoryHelper mainStorage,
-                                       final Uri targetFile, final String filename,
-                                       final String mime) {
-        StoredFileHelper storage;
-
-        try {
-            if (mainStorage == null) {
-                // using SAF on older android version
-                storage = new StoredFileHelper(context, null, targetFile, "");
-            } else if (targetFile == null) {
-                // the file does not exist, but it is probably used in a pending download
-                storage = new StoredFileHelper(mainStorage.getUri(), filename, mime,
-                        mainStorage.getTag());
-            } else {
-                // the target filename is already use, attempt to use it
-                storage = new StoredFileHelper(context, mainStorage.getUri(), targetFile,
-                        mainStorage.getTag());
-            }
-        } catch (final Exception e) {
-            ErrorUtil.createNotification(requireContext(),
-                    new ErrorInfo(e, UserAction.DOWNLOAD_FAILED, "Getting storage"));
-            return;
+    private boolean tryStartDownloadSync(@NonNull final StoredDirectoryHelper mainStorage,
+                                          final String filename, final String mime) {
+        if (downloadManager == null) {
+            return false;
         }
 
-        // get state of potential mission referring to the same file
+        final Uri existingFile = mainStorage.findFile(filename);
+        if (existingFile != null) {
+            return false;
+        }
+
+        final StoredFileHelper storage = new StoredFileHelper(mainStorage.getUri(), filename, mime,
+                mainStorage.getTag());
+        final MissionState state = downloadManager.checkForExistingMission(storage);
+
+        if (state != MissionState.None) {
+            return false;
+        }
+
+        if (!mainStorage.mkdirs()) {
+            showFailedDialog(R.string.error_path_creation);
+            return true;
+        }
+
+        final StoredFileHelper newStorage = mainStorage.createFile(filename, mime);
+        if (newStorage == null || !newStorage.canWrite()) {
+            showFailedDialog(R.string.error_file_creation);
+            return true;
+        }
+
+        downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+
+        if (currentInfo.getService() == ServiceList.BiliBili
+                && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button) {
+            BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
+        }
+
+        startSelectedDownload(newStorage);
+        return true;
+    }
+
+    private void checkSelectedDownloadAsync(@Nullable final StoredDirectoryHelper mainStorage,
+                                             @Nullable final Uri targetFile,
+                                             final String filename, final String mime) {
         if (downloadManager == null) {
             ErrorUtil.createNotification(requireContext(),
-                    new ErrorInfo(new IllegalStateException("DownloadManager not initialized"), 
+                    new ErrorInfo(new IllegalStateException("DownloadManager not initialized"),
                             UserAction.DOWNLOAD_FAILED, "DownloadManager is null"));
             return;
         }
-        final MissionState state = downloadManager.checkForExistingMission(storage);
+
+        disposables.add(Single.fromCallable(() -> {
+            Uri resolvedTargetFile = targetFile;
+            if (mainStorage != null && resolvedTargetFile == null) {
+                resolvedTargetFile = mainStorage.findFile(filename);
+            }
+
+            final StoredFileHelper storage;
+            try {
+                if (mainStorage == null) {
+                    storage = new StoredFileHelper(context, null, resolvedTargetFile, "");
+                } else if (resolvedTargetFile == null) {
+                    storage = new StoredFileHelper(mainStorage.getUri(), filename, mime,
+                            mainStorage.getTag());
+                } else {
+                    storage = new StoredFileHelper(context, mainStorage.getUri(), resolvedTargetFile,
+                            mainStorage.getTag());
+                }
+            } catch (final Exception e) {
+                throw new RuntimeException(e);
+            }
+
+            final MissionState state = downloadManager.checkForExistingMission(storage);
+            return new MissionCheckResult(state, storage, mainStorage, filename, mime,
+                    resolvedTargetFile);
+        })
+        .subscribeOn(Schedulers.io())
+        .observeOn(AndroidSchedulers.mainThread())
+        .subscribe(result -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            showConflictDialog(result);
+        }, error -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            final Throwable cause = error.getCause() != null ? error.getCause() : error;
+            ErrorUtil.createNotification(requireContext(),
+                    new ErrorInfo(cause, UserAction.DOWNLOAD_FAILED, "Getting storage"));
+        }));
+    }
+
+    private void showConflictDialog(final MissionCheckResult result) {
         @StringRes final int msgBtn;
         @StringRes final int msgBody;
 
-        // this switch checks if there is already a mission referring to the same file
-        switch (state) {
-            case Finished: // there is already a finished mission
+        switch (result.state) {
+            case Finished:
                 msgBtn = R.string.overwrite;
                 msgBody = R.string.overwrite_finished_warning;
                 break;
@@ -925,33 +1013,25 @@ public class DownloadDialog extends DialogFragment
                 msgBtn = R.string.generate_unique_name;
                 msgBody = R.string.download_already_running;
                 break;
-            case None: // there is no mission referring to the same file
-                if (handleNoExistingMission(mainStorage, targetFile, filename, mime, storage)) {
-                    return;
-                }
-                msgBtn = R.string.overwrite;
-                msgBody = R.string.overwrite_unrelated_warning;
-                break;
+            case None:
+                handleNoExistingMissionAsync(result);
+                return;
             default:
-                return; // unreachable
+                return;
         }
 
         final AlertDialog.Builder askDialog = new AlertDialog.Builder(context)
                 .setTitle(R.string.download_dialog_title)
                 .setMessage(msgBody)
                 .setNegativeButton(R.string.cancel, null);
-        final StoredFileHelper finalStorage = storage;
 
-
-        if (mainStorage == null) {
-            switch (state) {
+        if (result.mainStorage == null) {
+            switch (result.state) {
                 case Pending:
                 case Finished:
                     askDialog.setPositiveButton(msgBtn, (dialog, which) -> {
                         dialog.dismiss();
-                        downloadManager.forgetMission(finalStorage);
-                        downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-                        continueSelectedDownload(finalStorage);
+                        onOverwriteConfirmedNullStorage(result);
                     });
                     break;
             }
@@ -962,23 +1042,15 @@ public class DownloadDialog extends DialogFragment
 
         DialogInterface.OnClickListener actionListener = (dialog, which) -> {
             dialog.dismiss();
-            handleOverwriteAction(state, finalStorage, mainStorage, targetFile, filename, mime);
+            onOverwriteConfirmed(result);
         };
 
-        if (state == MissionState.None) {
-            // Move Cancel to the Neutral position (far left)
+        if (result.state == MissionState.None) {
             askDialog.setNeutralButton(R.string.cancel, null);
-            // Override the default Negative button to be Overwrite (middle)
             askDialog.setNegativeButton(msgBtn, actionListener);
-            // Set Generate unique name to the Positive position (far right)
             askDialog.setPositiveButton(R.string.generate_unique_name, (dialog, which) -> {
                 dialog.dismiss();
-                final StoredFileHelper storageNew = mainStorage.createUniqueFile(filename, mime);
-                if (storageNew == null) {
-                    showFailedDialog(R.string.error_file_creation);
-                } else {
-                    continueSelectedDownload(storageNew);
-                }
+                onUniqueNameConfirmed(result);
             });
         } else {
             askDialog.setPositiveButton(msgBtn, actionListener);
@@ -986,108 +1058,234 @@ public class DownloadDialog extends DialogFragment
         askDialog.create().show();
     }
 
-    private boolean handleNoExistingMission(final StoredDirectoryHelper mainStorage,
-                                             final Uri targetFile, final String filename,
-                                             final String mime, final StoredFileHelper storage) {
+    private void handleNoExistingMissionAsync(final MissionCheckResult result) {
+        final StoredFileHelper storage = result.storage;
+        final StoredDirectoryHelper mainStorage = result.mainStorage;
+
         if (mainStorage == null) {
-            if (!storage.existsAsFile() && !storage.create()) {
-                showFailedDialog(R.string.error_file_creation);
-                return true;
-            }
-            downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-            continueSelectedDownload(storage);
-            return true;
-        } else if (targetFile == null) {
-            if (mainStorage.fileExists(filename)) {
-                return false;
-            }
-
-            if (!mainStorage.mkdirs()) {
-                showFailedDialog(R.string.error_path_creation);
-                return true;
-            }
-
-            StoredFileHelper newStorage = mainStorage.createFile(filename, mime);
-            if (newStorage == null || !newStorage.canWrite()) {
-                showFailedDialog(R.string.error_file_creation);
-                return true;
-            }
-
-            downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-            if (currentInfo.getService() == ServiceList.BiliBili
-                    && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button) {
-                BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
-            }
-            continueSelectedDownload(newStorage);
-            return true;
-        }
-        return false;
-    }
-
-    private void handleOverwriteAction(final MissionState state,
-                                        final StoredFileHelper finalStorage,
-                                        final StoredDirectoryHelper mainStorage,
-                                        final Uri targetFile, final String filename,
-                                        final String mime) {
-        StoredFileHelper storageNew;
-        switch (state) {
-            case Finished:
-            case Pending:
-                downloadManager.forgetMission(finalStorage);
+            disposables.add(Single.fromCallable(() -> {
+                if (!storage.existsAsFile() && !storage.create()) {
+                    throw new RuntimeException("file_creation_failed");
+                }
                 downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-            case None:
-                downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
-                if (targetFile == null) {
-                    storageNew = mainStorage.createFile(filename, mime);
-                } else {
-                    try {
-                        storageNew = new StoredFileHelper(context, mainStorage.getUri(),
-                                targetFile, mainStorage.getTag());
-                    } catch (final IOException e) {
-                        Log.e(TAG, "Failed to take (or steal) the file in "
-                                + targetFile.toString());
-                        storageNew = null;
-                    }
+                return storage;
+            })
+            .subscribeOn(Schedulers.io())
+            .observeOn(AndroidSchedulers.mainThread())
+            .subscribe(s -> {
+                if (!isAdded() || getContext() == null) {
+                    return;
                 }
-
-                if (storageNew != null && storageNew.canWrite()) {
-                    if (currentInfo.getService() == ServiceList.BiliBili
-                            && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button) {
-                        BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
-                    }
-                    continueSelectedDownload(storageNew);
-                } else {
-                    showFailedDialog(R.string.error_file_creation);
+                continueSelectedDownloadAsync(s);
+            }, error -> {
+                if (!isAdded() || getContext() == null) {
+                    return;
                 }
-                break;
-            case PendingRunning:
-                storageNew = mainStorage.createUniqueFile(filename, mime);
-                if (storageNew == null) {
-                    showFailedDialog(R.string.error_file_creation);
-                } else {
-                    continueSelectedDownload(storageNew);
-                }
-                break;
-        }
-    }
-
-    private void continueSelectedDownload(@NonNull final StoredFileHelper storage) {
-        if (!storage.canWrite()) {
-            showFailedDialog(R.string.permission_denied);
+                showFailedDialog(R.string.error_file_creation);
+            }));
             return;
         }
 
-        // check if the selected file has to be overwritten, by simply checking its length
-        try {
-            if (storage.length() > 0) {
-                storage.truncate();
-            }
-        } catch (final IOException e) {
-            Log.e(TAG, "failed to truncate the file: " + storage.getUri().toString(), e);
-            showFailedDialog(R.string.overwrite_failed);
+        if (result.targetFile == null) {
+            final String sourceUrl = currentInfo.getUrl();
+            final boolean isBilibiliVideo = currentInfo.getService() == ServiceList.BiliBili
+                    && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button;
+
+            disposables.add(Single.fromCallable(() -> {
+                if (!mainStorage.mkdirs()) {
+                    throw new RuntimeException("path_creation_failed");
+                }
+                final StoredFileHelper newStorage = mainStorage.createFile(result.filename,
+                        result.mime);
+                if (newStorage == null) {
+                    throw new RuntimeException("file_creation_failed");
+                }
+                if (!newStorage.canWrite()) {
+                    throw new RuntimeException("file_creation_failed");
+                }
+                downloadManager.forgetMissionsBySource(sourceUrl, null);
+                if (isBilibiliVideo) {
+                    BilibiliTempHelper.createSidecarFiles(mainStorage, result.filename);
+                }
+                return newStorage;
+            })
+            .subscribeOn(Schedulers.io())
+            .observeOn(AndroidSchedulers.mainThread())
+            .subscribe(newStorage -> {
+                if (!isAdded() || getContext() == null) {
+                    return;
+                }
+                continueSelectedDownloadAsync(newStorage);
+            }, error -> {
+                if (!isAdded() || getContext() == null) {
+                    return;
+                }
+                final String msg = error.getMessage();
+                if ("path_creation_failed".equals(msg)) {
+                    showFailedDialog(R.string.error_path_creation);
+                } else {
+                    showFailedDialog(R.string.error_file_creation);
+                }
+            }));
             return;
         }
 
+        showOverwriteUnrelatedDialog(result);
+    }
+
+    private void showOverwriteUnrelatedDialog(final MissionCheckResult result) {
+        final AlertDialog.Builder askDialog = new AlertDialog.Builder(context)
+                .setTitle(R.string.download_dialog_title)
+                .setMessage(R.string.overwrite_unrelated_warning)
+                .setNeutralButton(R.string.cancel, null)
+                .setNegativeButton(R.string.overwrite, (dialog, which) -> {
+                    dialog.dismiss();
+                    onOverwriteConfirmed(result);
+                })
+                .setPositiveButton(R.string.generate_unique_name, (dialog, which) -> {
+                    dialog.dismiss();
+                    onUniqueNameConfirmed(result);
+                });
+        askDialog.create().show();
+    }
+
+    private void onOverwriteConfirmedNullStorage(final MissionCheckResult result) {
+        disposables.add(Single.fromCallable(() -> {
+            downloadManager.forgetMission(result.storage);
+            downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+            return result.storage;
+        })
+        .subscribeOn(Schedulers.io())
+        .observeOn(AndroidSchedulers.mainThread())
+        .subscribe(s -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            continueSelectedDownloadAsync(s);
+        }, error -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            showFailedDialog(R.string.general_error);
+        }));
+    }
+
+    private void onOverwriteConfirmed(final MissionCheckResult result) {
+        final String sourceUrl = currentInfo.getUrl();
+        final boolean isBilibiliVideo = currentInfo.getService() == ServiceList.BiliBili
+                && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button;
+
+        disposables.add(Single.fromCallable(() -> {
+            if (result.state == MissionState.PendingRunning) {
+                return result.mainStorage.createUniqueFile(result.filename, result.mime);
+            }
+
+            if (result.state == MissionState.Finished || result.state == MissionState.Pending) {
+                downloadManager.forgetMission(result.storage);
+            }
+            downloadManager.forgetMissionsBySource(sourceUrl, null);
+
+            final StoredFileHelper storageNew;
+            if (result.targetFile == null) {
+                storageNew = result.mainStorage.createFile(result.filename, result.mime);
+            } else {
+                try {
+                    storageNew = new StoredFileHelper(context, result.mainStorage.getUri(),
+                            result.targetFile, result.mainStorage.getTag());
+                } catch (final IOException e) {
+                    Log.e(TAG, "Failed to take (or steal) the file in "
+                            + result.targetFile.toString());
+                    return null;
+                }
+            }
+
+            if (storageNew != null) {
+                if (isBilibiliVideo) {
+                    BilibiliTempHelper.createSidecarFiles(result.mainStorage, result.filename);
+                }
+                if (!storageNew.canWrite()) {
+                    return null;
+                }
+            }
+            return storageNew;
+        })
+        .subscribeOn(Schedulers.io())
+        .observeOn(AndroidSchedulers.mainThread())
+        .subscribe(storageNew -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            if (storageNew != null) {
+                continueSelectedDownloadAsync(storageNew);
+            } else {
+                showFailedDialog(R.string.error_file_creation);
+            }
+        }, error -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            showFailedDialog(R.string.error_file_creation);
+        }));
+    }
+
+    private void onUniqueNameConfirmed(final MissionCheckResult result) {
+        disposables.add(Single.fromCallable(() -> result.mainStorage.createUniqueFile(
+                result.filename, result.mime))
+        .subscribeOn(Schedulers.io())
+        .observeOn(AndroidSchedulers.mainThread())
+        .subscribe(storageNew -> {
+
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            if (storageNew != null) {
+                continueSelectedDownloadAsync(storageNew);
+            } else {
+                showFailedDialog(R.string.error_file_creation);
+            }
+        }, error -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            showFailedDialog(R.string.error_file_creation);
+        }));
+    }
+
+    private void continueSelectedDownloadAsync(@NonNull final StoredFileHelper storage) {
+        disposables.add(Single.fromCallable(() -> {
+            if (!storage.canWrite()) {
+                throw new SecurityException("Cannot write to storage");
+            }
+            try {
+                if (storage.length() > 0) {
+                    storage.truncate();
+                }
+            } catch (final IOException e) {
+                Log.e(TAG, "failed to truncate the file: " + storage.getUri().toString(), e);
+                throw e;
+            }
+            return storage;
+        })
+        .subscribeOn(Schedulers.io())
+        .observeOn(AndroidSchedulers.mainThread())
+        .subscribe(s -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            startSelectedDownload(s);
+        }, error -> {
+            if (!isAdded() || getContext() == null) {
+                return;
+            }
+            if (error instanceof SecurityException) {
+                showFailedDialog(R.string.permission_denied);
+            } else {
+                showFailedDialog(R.string.overwrite_failed);
+            }
+        }));
+    }
+
+    private void startSelectedDownload(@NonNull final StoredFileHelper storage) {
         final Stream selectedStream;
         Stream secondaryStream = null;
         final char kind;
@@ -1101,7 +1299,6 @@ public class DownloadDialog extends DialogFragment
         String[] psArgs = null;
         long nearLength = 0;
 
-        // more download logic: select muxer, subtitle converter, etc.
         switch (dialogBinding.videoAudioGroup.getCheckedRadioButtonId()) {
             case R.id.audio_button:
                 kind = 'a';
@@ -1141,8 +1338,6 @@ public class DownloadDialog extends DialogFragment
                     final long videoSize = wrappedVideoStreams
                             .getSizeInBytes((VideoStream) selectedStream);
 
-                    // set nearLength, only, if both sizes are fetched or known. This probably
-                    // does not work on slow networks but is later updated in the downloader
                     if (secondary.getSizeInBytes() > 0 && videoSize > 0) {
                         nearLength = secondary.getSizeInBytes() + videoSize;
                     }
@@ -1176,7 +1371,7 @@ public class DownloadDialog extends DialogFragment
                     psName = Postprocessing.ALGORITHM_TTML_CONVERTER;
                     psArgs = new String[]{
                             selectedStream.getFormat().getSuffix(),
-                            "false" // ignore empty frames
+                            "false"
                     };
                 }
                 break;

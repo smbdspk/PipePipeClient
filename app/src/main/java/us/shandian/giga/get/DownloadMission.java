@@ -290,7 +290,9 @@ public class DownloadMission extends Mission {
 
 
     private void notify(int what) {
-        mHandler.obtainMessage(what, this).sendToTarget();
+        if (mHandler != null) {
+            mHandler.obtainMessage(what, this).sendToTarget();
+        }
     }
 
     synchronized void notifyProgress(long deltaLen) {
@@ -353,11 +355,11 @@ public class DownloadMission extends Mission {
                 } else if (msg.contains("ENOSPC")) {
                     code = ERROR_INSUFFICIENT_STORAGE;
                     err = null;
-                } else if (!storage.canWrite()) {
+                } else if (storage == null || !storage.canWrite()) {
                     code = ERROR_FILE_CREATION;
                     err = null;
                 }
-            } else if (!storage.canWrite()) {
+            } else if (storage == null || !storage.canWrite()) {
                 code = ERROR_FILE_CREATION;
                 err = null;
             }
@@ -432,7 +434,7 @@ public class DownloadMission extends Mission {
                 action = "Failed";
         }
 
-        Log.d(TAG, action + " postprocessing on " + storage.getName());
+        Log.d(TAG, action + " postprocessing on " + (storage != null ? storage.getName() : "unknown"));
 
         if (state == 2) {
             psState = state;
@@ -454,7 +456,7 @@ public class DownloadMission extends Mission {
         if (running || isFinished() || urls.length < 1) return;
 
         // ensure that the previous state is completely paused.
-        joinForThreads(10000);
+        joinForThreads(500);
 
         running = true;
         errCode = ERROR_NOTHING;
@@ -809,7 +811,7 @@ public class DownloadMission extends Mission {
      * @param errorCode error code which trigger the recovery procedure
      */
     void doRecover(int errorCode) {
-        Log.i(TAG, "Attempting to recover the mission: " + storage.getName());
+        Log.i(TAG, "Attempting to recover the mission: " + (storage != null ? storage.getName() : "unknown"));
 
         if (recoveryInfo == null) {
             notifyError(errorCode, null);
