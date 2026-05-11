@@ -21,6 +21,7 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Handler.Callback;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Message;
 import android.os.Parcelable;
@@ -104,6 +105,8 @@ public class DownloadManagerService extends Service {
     private DownloadManager mManager;
     private Notification mNotification;
     private Handler mHandler;
+    private Handler mBgHandler;
+    private HandlerThread mBgThread;
     private boolean mForeground = false;
     private NotificationManager mNotificationManager = null;
     private boolean mDownloadNotificationEnable = true;
@@ -156,6 +159,10 @@ public class DownloadManagerService extends Service {
 
         mBinder = new DownloadManagerBinder();
         mHandler = new Handler(this::handleMessage);
+
+        mBgThread = new HandlerThread("DMS-Background");
+        mBgThread.start();
+        mBgHandler = new Handler(mBgThread.getLooper());
 
         mPrefs = PreferenceManager.getDefaultSharedPreferences(this);
 
@@ -219,9 +226,9 @@ public class DownloadManagerService extends Service {
         String action = intent.getAction();
         if (action != null) {
             if (action.equals(Intent.ACTION_RUN)) {
-                mHandler.post(() -> startMission(intent));
+                mBgHandler.post(() -> startMission(intent));
             } else if (action.equals(ACTION_ADD_PENDING_FETCH)) {
-                mHandler.post(() -> addPendingFetchMission(intent));
+                mBgHandler.post(() -> addPendingFetchMission(intent));
             } else if (downloadDoneNotification != null) {
                 if (action.equals(ACTION_RESET_DOWNLOAD_FINISHED) || action.equals(ACTION_OPEN_DOWNLOADS_FINISHED)) {
                     downloadDoneCount = 0;
@@ -266,6 +273,11 @@ public class DownloadManagerService extends Service {
         if (icLauncher != null) icLauncher.recycle();
 
         mHandler = null;
+        if (mBgThread != null) {
+            mBgThread.quitSafely();
+            mBgThread = null;
+            mBgHandler = null;
+        }
         mManager.pauseAllMissions(true);
     }
 
@@ -285,36 +297,67 @@ public class DownloadManagerService extends Service {
         }
 
         DownloadMission mission = (DownloadMission) msg.obj;
+        boolean deferred = false;
 
         switch (msg.what) {
             case MESSAGE_FINISHED:
-                notifyMediaScanner(mission.storage.getUri());
-                notifyFinishedDownload(mission.storage.getName());
-                mManager.setFinished(mission);
-                handleConnectivityState(false);
-                updateForegroundState(mManager.runMissions());
+                if (mission.storage != null) {
+                    notifyMediaScanner(mission.storage.getUri());
+                    notifyFinishedDownload(mission.storage.getName());
+                }
+                deferred = true;
                 break;
             case MESSAGE_RUNNING:
                 updateForegroundState(true);
+                mBgHandler.post(() -> mManager.runMissions());
                 break;
             case MESSAGE_ERROR:
                 notifyFailedDownload(mission);
-                handleConnectivityState(false);
-                updateForegroundState(mManager.runMissions());
+                deferred = true;
                 break;
             case MESSAGE_PAUSED:
-                updateForegroundState(mManager.getRunningMissionsCount() > 0);
+                mBgHandler.post(() -> {
+                    final boolean running = mManager.getRunningMissionsCount() > 0;
+                    if (mHandler != null) {
+                        mHandler.post(() -> updateForegroundState(running));
+                    }
+                });
                 break;
             case MESSAGE_DELETED:
                 removeFailedDownload(mission);
                 break;
         }
 
-        if (msg.what != MESSAGE_ERROR)
-            mFailedDownloads.delete(mFailedDownloads.indexOfValue(mission));
-
-        for (Callback observer : mEchoObservers)
-            observer.handleMessage(msg);
+        if (deferred) {
+            final int what = msg.what;
+            mBgHandler.post(() -> {
+                if (what == MESSAGE_FINISHED) {
+                    mManager.setFinished(mission);
+                }
+                handleConnectivityState(false);
+                final boolean running = mManager.runMissions();
+                if (mHandler != null) {
+                    mHandler.post(() -> {
+                        updateForegroundState(running);
+                        if (what != MESSAGE_ERROR) {
+                            mFailedDownloads.delete(mFailedDownloads.indexOfValue(mission));
+                        }
+                        Message m = mHandler.obtainMessage(what, mission);
+                        for (Callback observer : mEchoObservers) {
+                            observer.handleMessage(m);
+                        }
+                        m.recycle();
+                    });
+                }
+            });
+        } else {
+            if (msg.what != MESSAGE_ERROR) {
+                mFailedDownloads.delete(mFailedDownloads.indexOfValue(mission));
+            }
+            for (Callback observer : mEchoObservers) {
+                observer.handleMessage(msg);
+            }
+        }
 
         return true;
     }
@@ -437,7 +480,8 @@ public class DownloadManagerService extends Service {
         try {
             storage = new StoredFileHelper(this, parentPath, path, tag);
         } catch (IOException e) {
-            throw new RuntimeException(e);// this never should happen
+            Log.e(TAG, "Failed to create StoredFileHelper for download", e);
+            return;
         }
 
         Postprocessing ps;
@@ -468,7 +512,7 @@ public class DownloadManagerService extends Service {
         if (ps != null)
             ps.setTemporalDir(DownloadManager.pickAvailableTemporalDir(this));
 
-        handleConnectivityState(true);// first check the actual network status
+        handleConnectivityState(true);
 
         mManager.startMission(mission);
     }
@@ -597,10 +641,12 @@ public class DownloadManagerService extends Service {
                     .setContentIntent(mOpenDownloadList);
         }
 
+        final String name = mission.storage != null
+                ? mission.storage.getName() : getString(R.string.download_failed);
         downloadFailedNotification.setContentTitle(getString(R.string.download_failed));
-        downloadFailedNotification.setContentText(mission.storage.getName());
+        downloadFailedNotification.setContentText(name);
         downloadFailedNotification.setStyle(new NotificationCompat.BigTextStyle()
-                .bigText(mission.storage.getName()));
+                .bigText(name));
 
         mNotificationManager.notify(id, downloadFailedNotification.build());
     }

@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.FinishedMission;
@@ -61,6 +62,10 @@ public class DownloadManager {
     boolean mPrefMeteredDownloads;
     boolean mPrefQueueLimit = true;
     private boolean mSelfMissionsControl;
+
+    private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ReentrantReadWriteLock.ReadLock readLock = rwLock.readLock();
+    private final ReentrantReadWriteLock.WriteLock writeLock = rwLock.writeLock();
 
     StoredDirectoryHelper mMainStorageAudio;
     StoredDirectoryHelper mMainStorageVideo;
@@ -265,80 +270,84 @@ public class DownloadManager {
      * @param mission the new download mission to add and run (if possible)
      */
     void startMission(DownloadMission mission) {
-        synchronized (this) {
-            mission.timestamp = System.currentTimeMillis();
-            mission.mHandler = mHandler;
-            mission.maxRetry = mPrefMaxRetry;
+        mission.timestamp = System.currentTimeMillis();
+        mission.mHandler = mHandler;
+        mission.maxRetry = mPrefMaxRetry;
 
-            // create metadata file
-            while (true) {
-                mission.metadata = new File(mPendingMissionsDir, String.valueOf(mission.timestamp));
-                if (!mission.metadata.isFile() && !mission.metadata.exists()) {
-                    try {
-                        if (!mission.metadata.createNewFile())
-                            throw new RuntimeException("Cant create download metadata file");
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    }
+        while (true) {
+            mission.metadata = new File(mPendingMissionsDir, String.valueOf(mission.timestamp));
+            try {
+                if (mission.metadata.createNewFile()) {
                     break;
                 }
-                mission.timestamp = System.currentTimeMillis();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
+            mission.timestamp = System.currentTimeMillis();
+        }
 
+        Utility.writeToFile(mission.metadata, mission);
+
+        boolean shouldStart;
+        writeLock.lock();
+        try {
             mSelfMissionsControl = true;
             mMissionsPending.add(mission);
 
-            // Before continue, save the metadata in case the internet connection is not available
-            Utility.writeToFile(mission.metadata, mission);
-
             if (mission.storage == null) {
-                // noting to do here
                 mission.errCode = DownloadMission.ERROR_FILE_CREATION;
                 if (mission.errObject != null)
                     mission.errObject = new IOException("DownloadMission.storage == NULL");
-                return;
+                shouldStart = false;
+            } else {
+                shouldStart = canDownloadInCurrentNetwork() && (!mPrefQueueLimit || getRunningMissionsCount() < 1);
             }
-
-            boolean start = !mPrefQueueLimit || getRunningMissionsCount() < 1;
-
-            if (canDownloadInCurrentNetwork() && start) {
-                mission.start();
-            }
+        } finally {
+            writeLock.unlock();
         }
+
+        if (shouldStart) {
+            mission.start();
+        }
+
+        runMissions();
     }
 
 
     void addPendingFetchMission(PendingFetchMission mission) {
-        synchronized (this) {
-            mission.timestamp = System.currentTimeMillis();
-            mission.mHandler = mHandler;
-            mission.maxRetry = mPrefMaxRetry;
-            mission.setDownloadManager(this);
-            mission.context = mContext;
+        mission.timestamp = System.currentTimeMillis();
+        mission.mHandler = mHandler;
+        mission.maxRetry = mPrefMaxRetry;
+        mission.setDownloadManager(this);
+        mission.context = mContext;
 
-            while (true) {
-                mission.metadata = new File(mPendingMissionsDir, String.valueOf(mission.timestamp));
-                if (!mission.metadata.isFile() && !mission.metadata.exists()) {
-                    try {
-                        if (!mission.metadata.createNewFile())
-                            throw new RuntimeException("Cant create download metadata file");
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    }
+        while (true) {
+            mission.metadata = new File(mPendingMissionsDir, String.valueOf(mission.timestamp));
+            try {
+                if (mission.metadata.createNewFile()) {
                     break;
                 }
-                mission.timestamp = System.currentTimeMillis();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
+            mission.timestamp = System.currentTimeMillis();
+        }
 
+        Utility.writeToFile(mission.metadata, mission);
+
+        writeLock.lock();
+        try {
             mSelfMissionsControl = true;
             mMissionsPending.add(mission);
-
-            Utility.writeToFile(mission.metadata, mission);
-
-            if (mission.errCode == ERROR_NOTHING) {
-                mission.start();
-            }
+        } finally {
+            writeLock.unlock();
         }
+
+        if (mission.errCode == ERROR_NOTHING) {
+            mission.start();
+        }
+
+        runMissions();
     }
 
     public void notifySkipped(String filename) {
@@ -359,21 +368,28 @@ public class DownloadManager {
     }
 
     public void deleteMission(Mission mission) {
-        synchronized (this) {
+        boolean isFinished = false;
+        writeLock.lock();
+        try {
             if (mission instanceof DownloadMission) {
                 mMissionsPending.remove(mission);
             } else if (mission instanceof FinishedMission) {
                 mMissionsFinished.remove(mission);
-                mFinishedMissionStore.deleteMission(mission);
+                isFinished = true;
             }
-
-            mission.delete();
+        } finally {
+            writeLock.unlock();
+        }
+        mission.delete();
+        if (isFinished) {
+            mFinishedMissionStore.deleteMission(mission);
         }
     }
 
     public void deleteAllErroredMissions() {
         final ArrayList<DownloadMission> toDelete;
-        synchronized (this) {
+        readLock.lock();
+        try {
             toDelete = new ArrayList<>();
             for (DownloadMission mission : mMissionsPending) {
                 if (mission.errCode != DownloadMission.ERROR_NOTHING
@@ -381,12 +397,17 @@ public class DownloadManager {
                     toDelete.add(mission);
                 }
             }
+        } finally {
+            readLock.unlock();
         }
         mExecutor.execute(() -> {
             for (DownloadMission mission : toDelete) {
-                synchronized (this) {
+                writeLock.lock();
+                try {
                     if (!mMissionsPending.contains(mission)) continue;
                     mMissionsPending.remove(mission);
+                } finally {
+                    writeLock.unlock();
                 }
                 mission.delete();
             }
@@ -395,7 +416,8 @@ public class DownloadManager {
 
     public void deleteAllFetchMissions() {
         final ArrayList<DownloadMission> toDelete;
-        synchronized (this) {
+        readLock.lock();
+        try {
             toDelete = new ArrayList<>();
             for (DownloadMission mission : mMissionsPending) {
                 if (mission instanceof PendingFetchMission
@@ -403,12 +425,17 @@ public class DownloadManager {
                     toDelete.add(mission);
                 }
             }
+        } finally {
+            readLock.unlock();
         }
         mExecutor.execute(() -> {
             for (DownloadMission mission : toDelete) {
-                synchronized (this) {
+                writeLock.lock();
+                try {
                     if (!mMissionsPending.contains(mission)) continue;
                     mMissionsPending.remove(mission);
+                } finally {
+                    writeLock.unlock();
                 }
                 mission.delete();
             }
@@ -416,25 +443,42 @@ public class DownloadManager {
     }
 
     public void forgetMission(StoredFileHelper storage) {
-        synchronized (this) {
-            Mission mission = getAnyMission(storage);
-            if (mission == null) return;
+        Mission mission = null;
+        boolean isFinished = false;
+        writeLock.lock();
+        try {
+            DownloadMission pending = getPendingMission(storage);
+            if (pending != null) {
+                mission = pending;
+                mMissionsPending.remove(pending);
+            } else {
+                int idx = getFinishedMissionIndex(storage);
+                if (idx >= 0) {
+                    mission = mMissionsFinished.get(idx);
+                    isFinished = true;
+                    mMissionsFinished.remove(idx);
+                }
+            }
+            if (mission != null) {
+                mission.storage = null;
+            }
+        } finally {
+            writeLock.unlock();
+        }
 
-            if (mission instanceof DownloadMission) {
-                mMissionsPending.remove(mission);
-            } else if (mission instanceof FinishedMission) {
-                mMissionsFinished.remove(mission);
+        if (mission != null) {
+            mission.delete();
+            if (isFinished) {
                 mFinishedMissionStore.deleteMission(mission);
             }
-
-            mission.storage = null;
-            mission.delete();
         }
     }
 
     public void removePendingFetchMissionsBySource(@NonNull final String sourceUrl,
                                                     @Nullable final PendingFetchMission exclude) {
-        synchronized (this) {
+        final List<DownloadMission> toDelete = new ArrayList<>();
+        writeLock.lock();
+        try {
             final Iterator<DownloadMission> it = mMissionsPending.iterator();
             while (it.hasNext()) {
                 final DownloadMission mission = it.next();
@@ -445,16 +489,24 @@ public class DownloadManager {
                     final PendingFetchMission pfm = (PendingFetchMission) mission;
                     if (sourceUrl.equals(pfm.sourceUrl)) {
                         it.remove();
-                        mission.delete();
+                        toDelete.add(mission);
                     }
                 }
             }
+        } finally {
+            writeLock.unlock();
+        }
+        for (Mission mission : toDelete) {
+            mission.delete();
         }
     }
 
     public void forgetMissionsBySource(@NonNull final String sourceUrl,
                                        @Nullable final Mission exclude) {
-        synchronized (this) {
+        final List<Mission> pendingDelete = new ArrayList<>();
+        final List<FinishedMission> finishedDelete = new ArrayList<>();
+        writeLock.lock();
+        try {
             final Iterator<DownloadMission> it = mMissionsPending.iterator();
             while (it.hasNext()) {
                 final DownloadMission mission = it.next();
@@ -465,24 +517,34 @@ public class DownloadManager {
                     final PendingFetchMission pfm = (PendingFetchMission) mission;
                     if (sourceUrl.equals(pfm.sourceUrl)) {
                         it.remove();
-                        mission.delete();
+                        pendingDelete.add(mission);
                     }
                 } else if (sourceUrl.equals(mission.source)) {
                     it.remove();
-                    mission.delete();
+                    pendingDelete.add(mission);
                 }
             }
             for (int i = mMissionsFinished.size() - 1; i >= 0; i--) {
                 final FinishedMission mission = mMissionsFinished.get(i);
                 if (sourceUrl.equals(mission.source)) {
                     mMissionsFinished.remove(i);
-                    mFinishedMissionStore.deleteMission(mission);
+                    finishedDelete.add(mission);
                 }
             }
+        } finally {
+            writeLock.unlock();
+        }
+        for (Mission mission : pendingDelete) {
+            mission.delete();
+        }
+        for (FinishedMission mission : finishedDelete) {
+            mFinishedMissionStore.deleteMission(mission);
         }
     }
 
     public void tryRecover(DownloadMission mission) {
+        if (mission.storage == null) return;
+
         StoredDirectoryHelper mainStorage = getMainStorage(mission.storage.getTag());
 
         if (!mission.storage.isInvalid() && mission.storage.create()) return;
@@ -511,7 +573,7 @@ public class DownloadManager {
     @Nullable
     private DownloadMission getPendingMission(StoredFileHelper storage) {
         for (DownloadMission mission : mMissionsPending) {
-            if (mission.storage.equals(storage)) {
+            if (mission.storage != null && mission.storage.equals(storage)) {
                 return mission;
             }
         }
@@ -529,7 +591,8 @@ public class DownloadManager {
      */
     private int getFinishedMissionIndex(StoredFileHelper storage) {
         for (int i = 0; i < mMissionsFinished.size(); i++) {
-            if (mMissionsFinished.get(i).storage.equals(storage)) {
+            if (mMissionsFinished.get(i).storage != null
+                    && mMissionsFinished.get(i).storage.equals(storage)) {
                 return i;
             }
         }
@@ -538,20 +601,30 @@ public class DownloadManager {
 
     private int checkFinishedMissionValid(StoredFileHelper storage) {
         int idx;
-        synchronized (this) {
+        readLock.lock();
+        try {
             idx = getFinishedMissionIndex(storage);
-            if (idx < 0) return -1;
+        } finally {
+            readLock.unlock();
         }
+        if (idx < 0) return -1;
         if (!storage.existsAsFile() || storage.length() == 0) {
-            synchronized (this) {
+            FinishedMission toDelete = null;
+            writeLock.lock();
+            try {
                 if (idx < mMissionsFinished.size()
                         && mMissionsFinished.get(idx).storage.equals(storage)) {
                     if (DEBUG) {
                         Log.d(TAG, "matched downloaded file removed: " + storage.getName());
                     }
-                    mFinishedMissionStore.deleteMission(mMissionsFinished.get(idx));
+                    toDelete = mMissionsFinished.get(idx);
                     mMissionsFinished.remove(idx);
                 }
+            } finally {
+                writeLock.unlock();
+            }
+            if (toDelete != null) {
+                mFinishedMissionStore.deleteMission(toDelete);
             }
             return -1;
         }
@@ -559,12 +632,15 @@ public class DownloadManager {
     }
 
     private Mission getAnyMission(StoredFileHelper storage) {
-        synchronized (this) {
+        readLock.lock();
+        try {
             Mission mission = getPendingMission(storage);
             if (mission != null) return mission;
 
             int idx = getFinishedMissionIndex(storage);
             if (idx >= 0) return mMissionsFinished.get(idx);
+        } finally {
+            readLock.unlock();
         }
 
         return null;
@@ -572,36 +648,48 @@ public class DownloadManager {
 
     int getRunningMissionsCount() {
         int count = 0;
-        synchronized (this) {
+        readLock.lock();
+        try {
             for (DownloadMission mission : mMissionsPending) {
                 if (mission.running && !mission.isPsFailed() && !mission.isFinished())
                     count++;
             }
+        } finally {
+            readLock.unlock();
         }
 
         return count;
     }
 
     public void pauseAllMissions(boolean force) {
-        synchronized (this) {
+        List<DownloadMission> toPause = new ArrayList<>();
+        writeLock.lock();
+        try {
             for (DownloadMission mission : mMissionsPending) {
                 if (!mission.running || mission.isPsRunning() || mission.isFinished()) continue;
 
                 if (force) {
-                    // avoid waiting for threads
                     mission.init = null;
                     mission.threads = new Thread[0];
                 }
 
-                mission.pause();
+                toPause.add(mission);
             }
+        } finally {
+            writeLock.unlock();
+        }
+        for (DownloadMission mission : toPause) {
+            mission.pause();
         }
     }
 
     public void startAllMissions() {
         final ArrayList<DownloadMission> toStart;
-        synchronized (this) {
+        readLock.lock();
+        try {
             toStart = new ArrayList<>(mMissionsPending);
+        } finally {
+            readLock.unlock();
         }
         mExecutor.execute(() -> {
             for (DownloadMission mission : toStart) {
@@ -613,8 +701,11 @@ public class DownloadManager {
 
 public void retryAllErrorMissions() {
         final ArrayList<DownloadMission> toRetry;
-        synchronized (this) {
+        readLock.lock();
+        try {
             toRetry = new ArrayList<>(mMissionsPending);
+        } finally {
+            readLock.unlock();
         }
         mExecutor.execute(() -> {
             for (DownloadMission mission : toRetry) {
@@ -628,17 +719,26 @@ public void retryAllErrorMissions() {
                     convertToPendingFetchMission(mission);
                 } else {
                     tryRecover(mission);
-                    if (!mission.storage.isInvalid()) {
+                    if (mission.storage != null && !mission.storage.isInvalid()) {
                         mission.errObject = null;
                         mission.resetState(true, false, DownloadMission.ERROR_NOTHING);
+                        mission.start();
                     }
-                    mission.start();
                 }
             }
+            runMissions();
         });
     }
 
     public void convertToPendingFetchMission(@NonNull DownloadMission mission) {
+        writeLock.lock();
+        try {
+            mMissionsPending.remove(mission);
+        } finally {
+            writeLock.unlock();
+        }
+        mission.delete();
+
         try {
             int serviceId = org.schabi.newpipe.extractor.NewPipe
                     .getServiceByUrl(mission.source).getServiceId();
@@ -648,8 +748,6 @@ public void retryAllErrorMissions() {
                     ? mission.storage.getName() : mission.source;
             String tag = audioOnly ? TAG_AUDIO : TAG_VIDEO;
 
-            mission.delete();
-
             StoredFileHelper placeholderStorage = new StoredFileHelper(null, name,
                     StoredFileHelper.DEFAULT_MIME, tag);
             PendingFetchMission pfm = new PendingFetchMission(
@@ -658,11 +756,8 @@ public void retryAllErrorMissions() {
                     PendingFetchMission.BEHAVIOR_OVERWRITE, placeholderStorage);
 
             addPendingFetchMission(pfm);
-} catch (final Exception ignored) {
-            synchronized (this) {
-                mMissionsPending.remove(mission);
-            }
-            mission.delete();
+        } catch (final Exception ignored) {
+            Log.w(TAG, "Failed to convert mission to PFM", ignored);
         }
     }
 
@@ -672,12 +767,20 @@ public void retryAllErrorMissions() {
      * @param mission the desired mission
      */
     void setFinished(DownloadMission mission) {
-        synchronized (this) {
+        boolean shouldPersist;
+        writeLock.lock();
+        try {
             mMissionsPending.remove(mission);
-            if(mission.storage.srcName.endsWith(".tmp")){
-                return;
+            shouldPersist = mission.storage != null
+                    && mission.storage.srcName != null
+                    && !mission.storage.srcName.endsWith(".tmp");
+            if (shouldPersist) {
+                mMissionsFinished.add(0, new FinishedMission(mission));
             }
-            mMissionsFinished.add(0, new FinishedMission(mission));
+        } finally {
+            writeLock.unlock();
+        }
+        if (shouldPersist) {
             mFinishedMissionStore.addFinishedMission(mission);
         }
     }
@@ -688,7 +791,9 @@ public void retryAllErrorMissions() {
      * @return true if one or multiple missions are running, otherwise, false
      */
     public boolean runMissions() {
-        synchronized (this) {
+        final ArrayList<DownloadMission> toStart;
+        readLock.lock();
+        try {
             if (mMissionsPending.size() < 1) return false;
             if (!canDownloadInCurrentNetwork()) return false;
 
@@ -697,20 +802,25 @@ public void retryAllErrorMissions() {
                     if (!mission.isFinished() && mission.running) return true;
             }
 
-            boolean flag = false;
+            toStart = new ArrayList<>();
             for (DownloadMission mission : mMissionsPending) {
                 if (mission.running || !mission.enqueued || mission.isFinished())
                     continue;
-
-                resumeMission(mission);
-                if (mission.errCode != ERROR_NOTHING) continue;
-
-                if (mPrefQueueLimit) return true;
-                flag = true;
+                toStart.add(mission);
+                if (mPrefQueueLimit) break;
             }
-
-            return flag;
+        } finally {
+            readLock.unlock();
         }
+
+        boolean flag = false;
+        for (DownloadMission mission : toStart) {
+            resumeMission(mission);
+            if (mission.errCode != ERROR_NOTHING
+                    && !(mission instanceof PendingFetchMission)) continue;
+            flag = true;
+        }
+        return flag;
     }
 
     public MissionIterator getIterator() {
@@ -722,11 +832,16 @@ public void retryAllErrorMissions() {
      * Forget all finished downloads, but, doesn't delete any file
      */
     public void forgetFinishedDownloads() {
-        synchronized (this) {
-            for (FinishedMission mission : mMissionsFinished) {
-                mFinishedMissionStore.deleteMission(mission);
-            }
+        List<FinishedMission> toDelete;
+        writeLock.lock();
+        try {
+            toDelete = new ArrayList<>(mMissionsFinished);
             mMissionsFinished.clear();
+        } finally {
+            writeLock.unlock();
+        }
+        for (FinishedMission mission : toDelete) {
+            mFinishedMissionStore.deleteMission(mission);
         }
     }
 
@@ -742,28 +857,39 @@ public void retryAllErrorMissions() {
         if (currentStatus == NetworkState.Unavailable) return;
 
         if (!mSelfMissionsControl || updateOnly) {
-            return;// don't touch anything without the user interaction
+            return;
         }
 
         boolean isMetered = mPrefMeteredDownloads && mLastNetworkStatus == NetworkState.MeteredOperating;
 
-        synchronized (this) {
+        List<DownloadMission> toPause = new ArrayList<>();
+        List<DownloadMission> toStart = new ArrayList<>();
+
+        readLock.lock();
+        try {
             for (DownloadMission mission : mMissionsPending) {
                 if (mission.isCorrupt() || mission.isPsRunning()) continue;
-
                 if (mission.running && isMetered) {
-                    mission.pause();
+                    toPause.add(mission);
                 } else if (!mission.running && !isMetered && mission.enqueued) {
-                    mission.start();
+                    toStart.add(mission);
                     if (mPrefQueueLimit) break;
                 }
             }
+        } finally {
+            readLock.unlock();
         }
+
+        for (DownloadMission mission : toPause) mission.pause();
+        for (DownloadMission mission : toStart) mission.start();
     }
 
     void updateMaximumAttempts() {
-        synchronized (this) {
+        writeLock.lock();
+        try {
             for (DownloadMission mission : mMissionsPending) mission.maxRetry = mPrefMaxRetry;
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -777,7 +903,8 @@ public void retryAllErrorMissions() {
     }
 
     public MissionState checkForExistingMission(StoredFileHelper storage) {
-        synchronized (this) {
+        readLock.lock();
+        try {
             final DownloadMission pending = getPendingMission(storage);
             if (pending != null) {
                 if (pending.isFinished()) {
@@ -785,6 +912,8 @@ public void retryAllErrorMissions() {
                 }
                 return pending.running ? MissionState.PendingRunning : MissionState.Pending;
             }
+        } finally {
+            readLock.unlock();
         }
 
         if (checkFinishedMissionValid(storage) >= 0) return MissionState.Finished;
@@ -840,17 +969,17 @@ public void retryAllErrorMissions() {
         }
 
         private ArrayList<Object> getSpecialItems() {
-            synchronized (DownloadManager.this) {
+            readLock.lock();
+            try {
                 ArrayList<Mission> pending = new ArrayList<>(mMissionsPending);
                 ArrayList<Mission> finished = new ArrayList<>(mMissionsFinished);
                 List<Mission> remove = new ArrayList<>(hidden);
 
-                // Don't hide recoverable missions
                 remove.removeIf(mission -> {
                     if (mission instanceof DownloadMission) {
                         DownloadMission dm = (DownloadMission) mission;
                         if (canRecoverMission(dm)) {
-                            return false; // Don't remove recoverable missions
+                            return false;
                         }
                     }
                     return pending.remove(mission) || finished.remove(mission);
@@ -875,6 +1004,8 @@ public void retryAllErrorMissions() {
                 hasFinished = finished.size() > 0;
 
                 return list;
+            } finally {
+                readLock.unlock();
             }
         }
 
@@ -929,7 +1060,8 @@ public void retryAllErrorMissions() {
             boolean running = false;
             boolean paused = false;
 
-            synchronized (DownloadManager.this) {
+            readLock.lock();
+            try {
                 for (DownloadMission mission : mMissionsPending) {
                     if (hidden.contains(mission) || mission.isCorrupt())
                         continue;
@@ -939,13 +1071,16 @@ public void retryAllErrorMissions() {
                     else
                         paused = true;
                 }
+            } finally {
+                readLock.unlock();
             }
 
             return new boolean[]{running, paused};
         }
 
         public boolean hasErrorMissions() {
-            synchronized (DownloadManager.this) {
+            readLock.lock();
+            try {
                 for (DownloadMission mission : mMissionsPending) {
                     if (hidden.contains(mission))
                         continue;
@@ -953,12 +1088,15 @@ public void retryAllErrorMissions() {
                             && !mission.isFinished())
                         return true;
                 }
+            } finally {
+                readLock.unlock();
             }
             return false;
         }
 
         public boolean hasPendingFetchMissions() {
-            synchronized (DownloadManager.this) {
+            readLock.lock();
+            try {
                 for (DownloadMission mission : mMissionsPending) {
                     if (hidden.contains(mission))
                         continue;
@@ -966,6 +1104,8 @@ public void retryAllErrorMissions() {
                             && ((PendingFetchMission) mission).pendingFetch)
                         return true;
                 }
+            } finally {
+                readLock.unlock();
             }
             return false;
         }

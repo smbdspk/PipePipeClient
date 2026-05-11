@@ -24,7 +24,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import us.shandian.giga.postprocessing.Postprocessing;
@@ -61,7 +60,7 @@ public class PendingFetchMission extends DownloadMission {
     public String qualityLabel;
     public int existingFileBehavior;
 
-    public transient Disposable fetchDisposable;
+    public transient volatile Disposable fetchDisposable;
 
     private transient DownloadManager downloadManager;
 
@@ -114,6 +113,9 @@ public class PendingFetchMission extends DownloadMission {
     public void startFetch() {
         if (fetchDisposable != null && !fetchDisposable.isDisposed()) return;
 
+        errCode = ERROR_NOTHING;
+        errObject = null;
+
         if (activeFetchCount.get() >= maxConcurrentFetches) {
             enqueued = true;
             running = false;
@@ -134,8 +136,6 @@ public class PendingFetchMission extends DownloadMission {
         }
 
         running = true;
-        errCode = ERROR_NOTHING;
-        errObject = null;
         activeFetchCount.incrementAndGet();
 
         if (mHandler != null) {
@@ -144,7 +144,7 @@ public class PendingFetchMission extends DownloadMission {
 
         fetchDisposable = ExtractorHelper.getStreamInfo(sourceServiceId, sourceUrl, false)
                 .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
+                .observeOn(Schedulers.io())
                 .subscribe(this::onFetchSuccess, this::onFetchError);
     }
 
