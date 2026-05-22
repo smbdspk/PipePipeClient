@@ -159,6 +159,15 @@ public class StoredFileHelper implements Serializable {
             this.sourceTree = parent.toString();
         }
 
+        if (sourceTree == null && source != null) {
+            if (ioFile != null) {
+                final File parentDir = ioFile.getParentFile();
+                if (parentDir != null) {
+                    this.sourceTree = Uri.fromFile(parentDir).toString();
+                }
+            }
+        }
+
         this.srcName = getName();
         this.srcType = getType();
     }
