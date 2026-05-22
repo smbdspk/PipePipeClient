@@ -39,8 +39,9 @@ import java.util.Random;
 
 import okio.ByteString;
 import org.schabi.newpipe.streams.io.StoredDirectoryHelper;
-import us.shandian.giga.get.DownloadMission;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
+
+import us.shandian.giga.get.DownloadMission;
 
 import static org.schabi.newpipe.extractor.services.bilibili.BilibiliService.WWW_REFERER;
 import static org.schabi.newpipe.streams.io.StoredDirectoryHelper.findFileSAFHelper;
@@ -346,17 +347,15 @@ public class Utility {
 
     public static void removeTempFileOfDownloadedVideo(StoredFileHelper storedFileHelper) {
         String name = storedFileHelper.getName();
-        String baseExt = getFileExt(name);
-        if (baseExt == null) baseExt = ".mp4";
-        String tmpMp4 = name.replace(baseExt, ".tmp" + baseExt);
-        String tmp = name.replace(baseExt, ".tmp");
+        String tmpMp4 = BilibiliTempHelper.tmpVideoName(name);
+        String tmpM4a = BilibiliTempHelper.tmpAudioName(name);
 
         if(storedFileHelper.docTree == null) {
             try {
                 File ioTree = storedFileHelper.ioFile != null ? storedFileHelper.ioFile.getParentFile() : null;
                 if (ioTree == null) return;
                 for (final File file : ioTree.listFiles()) {
-                    if (file.getName().equals(tmpMp4) || file.getName().equals(tmp)) {
+                    if (file.getName().equals(tmpMp4) || file.getName().equals(tmpM4a)) {
                         file.delete();
                     }
                 }
@@ -370,7 +369,7 @@ public class Utility {
             DocumentFile[] docFiles = docTree.listFiles();
             for (DocumentFile docFile : docFiles) {
                 if (docFile.getName() != null
-                        && (docFile.getName().equals(tmpMp4) || docFile.getName().equals(tmp))) {
+                        && (docFile.getName().equals(tmpMp4) || docFile.getName().equals(tmpM4a))) {
                     docFile.delete();
                 }
             }

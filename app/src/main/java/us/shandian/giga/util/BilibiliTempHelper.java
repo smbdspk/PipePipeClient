@@ -6,11 +6,13 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.documentfile.provider.DocumentFile;
 
 import org.schabi.newpipe.streams.io.StoredDirectoryHelper;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
 
 import java.io.File;
+import java.io.IOException;
 
 public final class BilibiliTempHelper {
 
@@ -24,7 +26,7 @@ public final class BilibiliTempHelper {
     }
 
     public static String tmpAudioExt() {
-        return ".tmp";
+        return ".tmp.m4a";
     }
 
     public static String tmpVideoName(@NonNull String filename) {
@@ -41,8 +43,37 @@ public final class BilibiliTempHelper {
 
     public static void createSidecarFiles(@NonNull StoredDirectoryHelper dir,
                                           @NonNull String filename) {
-        dir.createFile(tmpVideoName(filename), "video/mp4");
-        dir.createFile(tmpAudioName(filename), String.valueOf(org.schabi.newpipe.extractor.MediaFormat.M4A));
+        dir.createFile(tmpVideoName(filename), StoredFileHelper.DEFAULT_MIME);
+        dir.createFile(tmpAudioName(filename), StoredFileHelper.DEFAULT_MIME);
+    }
+
+    public static void createSidecarFilesDirectIO(@NonNull File parentDir,
+                                                   @NonNull String filename) {
+        try {
+            new File(parentDir, tmpVideoName(filename)).createNewFile();
+            new File(parentDir, tmpAudioName(filename)).createNewFile();
+        } catch (final IOException e) {
+            Log.w(TAG, "Failed to create sidecar files for " + filename, e);
+        }
+    }
+
+public static void createSidecarFilesSAF(@NonNull Context context,
+                                               @NonNull DocumentFile tree,
+                                               @NonNull String filename) {
+        try {
+            String videoName = tmpVideoName(filename);
+            String audioName = tmpAudioName(filename);
+            DocumentFile audioDoc = StoredDirectoryHelper.findFileSAFHelper(context, tree, audioName);
+            if (audioDoc == null) {
+                tree.createFile(StoredFileHelper.DEFAULT_MIME, audioName);
+            }
+            DocumentFile videoDoc = StoredDirectoryHelper.findFileSAFHelper(context, tree, videoName);
+            if (videoDoc == null) {
+                tree.createFile(StoredFileHelper.DEFAULT_MIME, videoName);
+            }
+        } catch (final Exception e) {
+            Log.w(TAG, "Failed to create SAF sidecar files for " + filename, e);
+        }
     }
 
     public static void cleanupSidecarFiles(@Nullable StoredDirectoryHelper dir,

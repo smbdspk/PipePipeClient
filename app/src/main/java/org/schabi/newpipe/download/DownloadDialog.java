@@ -132,6 +132,8 @@ public class DownloadDialog extends DialogFragment
     // Variables for file name and MIME type when picking new folder because it's not set yet
     private String filenameTmp;
     private String mimeTmp;
+    private char pendingDownloadKind;
+    private int pendingDownloadThreads;
 
     private static class MissionCheckResult {
         final MissionState state;
@@ -774,9 +776,11 @@ public class DownloadDialog extends DialogFragment
         // later, run a very very very large file checking logic
 
         filenameTmp = getNameEditText().concat(".");
+        pendingDownloadThreads = dialogBinding.threads.getProgress() + 1;
 
         switch (dialogBinding.videoAudioGroup.getCheckedRadioButtonId()) {
             case R.id.audio_button:
+                pendingDownloadKind = 'a';
                 selectedMediaType = getString(R.string.last_download_type_audio_key);
                 mainStorage = mainStorageAudio;
                 format = audioStreamsAdapter.getItem(selectedAudioIndex).getFormat();
@@ -792,6 +796,7 @@ public class DownloadDialog extends DialogFragment
                 }
                 break;
             case R.id.video_button:
+                pendingDownloadKind = 'v';
                 selectedMediaType = getString(R.string.last_download_type_video_key);
                 mainStorage = mainStorageVideo;
                 format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
@@ -804,6 +809,7 @@ public class DownloadDialog extends DialogFragment
                 }
                 break;
             case R.id.subtitle_button:
+                pendingDownloadKind = 's';
                 selectedMediaType = getString(R.string.last_download_type_subtitle_key);
                 mainStorage = mainStorageVideo; // subtitle & video files go together
                 format = subtitleStreamsAdapter.getItem(selectedSubtitleIndex).getFormat();
@@ -831,7 +837,7 @@ public class DownloadDialog extends DialogFragment
             Toast.makeText(context, getString(R.string.no_dir_yet),
                     Toast.LENGTH_LONG).show();
 
-            if (dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.audio_button) {
+            if (pendingDownloadKind == 'a') {
                 launchDirectoryPicker(requestDownloadPickAudioFolderLauncher);
             } else {
                 launchDirectoryPicker(requestDownloadPickVideoFolderLauncher);
@@ -846,7 +852,7 @@ public class DownloadDialog extends DialogFragment
                 initialPath = null;
             } else {
                 final File initialSavePath;
-                if (dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.audio_button) {
+                if (pendingDownloadKind == 'a') {
                     initialSavePath = NewPipeSettings.getDir(Environment.DIRECTORY_MUSIC);
                 } else {
                     initialSavePath = NewPipeSettings.getDir(Environment.DIRECTORY_MOVIES);
@@ -910,7 +916,7 @@ public class DownloadDialog extends DialogFragment
         downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
 
         if (currentInfo.getService() == ServiceList.BiliBili
-                && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button) {
+                && pendingDownloadKind == 'v') {
             BilibiliTempHelper.createSidecarFiles(mainStorage, filename);
         }
 
@@ -956,16 +962,14 @@ public class DownloadDialog extends DialogFragment
         .subscribeOn(Schedulers.io())
         .observeOn(AndroidSchedulers.mainThread())
         .subscribe(result -> {
-            if (!isAdded() || getContext() == null) {
-                return;
+            if (result.state == MissionState.None) {
+                handleNoExistingMissionAsync(result);
+            } else if (isAdded() && getContext() != null) {
+                showConflictDialog(result);
             }
-            showConflictDialog(result);
         }, error -> {
-            if (!isAdded() || getContext() == null) {
-                return;
-            }
             final Throwable cause = error.getCause() != null ? error.getCause() : error;
-            ErrorUtil.createNotification(requireContext(),
+            ErrorUtil.createNotification(context.getApplicationContext(),
                     new ErrorInfo(cause, UserAction.DOWNLOAD_FAILED, "Getting storage"));
         }));
     }
@@ -1037,33 +1041,48 @@ public class DownloadDialog extends DialogFragment
         final StoredDirectoryHelper mainStorage = result.mainStorage;
 
         if (mainStorage == null) {
+            final String sourceUrl = currentInfo.getUrl();
+            final boolean isBilibiliVideo = pendingDownloadKind == 'v'
+                    && currentInfo.getService() == ServiceList.BiliBili;
             disposables.add(Single.fromCallable(() -> {
                 if (!storage.existsAsFile() && !storage.create()) {
                     throw new RuntimeException("file_creation_failed");
                 }
-                downloadManager.forgetMissionsBySource(currentInfo.getUrl(), null);
+                if (!storage.canWrite() || !storage.existsAsFile()) {
+                    throw new RuntimeException("file_creation_failed");
+                }
+                if (storage.length() > 0) {
+                    storage.truncate();
+                }
+                if (isBilibiliVideo) {
+                    if (storage.isDirect() && storage.ioFile != null) {
+                        final File parentDir = storage.ioFile.getParentFile();
+                        if (parentDir != null) {
+                            BilibiliTempHelper.createSidecarFilesDirectIO(parentDir, result.filename);
+                        }
+                    } else if (storage.docTree != null) {
+                        BilibiliTempHelper.createSidecarFilesSAF(context.getApplicationContext(), storage.docTree, result.filename);
+                    }
+                }
+                downloadManager.forgetMissionsBySource(sourceUrl, null);
                 return storage;
             })
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
             .subscribe(s -> {
-                if (!isAdded() || getContext() == null) {
-                    return;
-                }
-                continueSelectedDownloadAsync(s);
+                startSelectedDownload(s);
             }, error -> {
-                if (!isAdded() || getContext() == null) {
-                    return;
+                if (isAdded() && getContext() != null) {
+                    showFailedDialog(R.string.error_file_creation);
                 }
-                showFailedDialog(R.string.error_file_creation);
             }));
             return;
         }
 
         if (result.targetFile == null) {
             final String sourceUrl = currentInfo.getUrl();
-            final boolean isBilibiliVideo = currentInfo.getService() == ServiceList.BiliBili
-                    && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button;
+            final boolean isBilibiliVideo = pendingDownloadKind == 'v'
+                    && currentInfo.getService() == ServiceList.BiliBili;
 
             disposables.add(Single.fromCallable(() -> {
                 if (!mainStorage.mkdirs()) {
@@ -1086,19 +1105,15 @@ public class DownloadDialog extends DialogFragment
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
             .subscribe(newStorage -> {
-                if (!isAdded() || getContext() == null) {
-                    return;
-                }
-                continueSelectedDownloadAsync(newStorage);
+                startSelectedDownload(newStorage);
             }, error -> {
-                if (!isAdded() || getContext() == null) {
-                    return;
-                }
-                final String msg = error.getMessage();
-                if ("path_creation_failed".equals(msg)) {
-                    showFailedDialog(R.string.error_path_creation);
-                } else {
-                    showFailedDialog(R.string.error_file_creation);
+                if (isAdded() && getContext() != null) {
+                    final String msg = error.getMessage();
+                    if ("path_creation_failed".equals(msg)) {
+                        showFailedDialog(R.string.error_path_creation);
+                    } else {
+                        showFailedDialog(R.string.error_file_creation);
+                    }
                 }
             }));
             return;
@@ -1132,22 +1147,18 @@ public class DownloadDialog extends DialogFragment
         .subscribeOn(Schedulers.io())
         .observeOn(AndroidSchedulers.mainThread())
         .subscribe(s -> {
-            if (!isAdded() || getContext() == null) {
-                return;
-            }
             continueSelectedDownloadAsync(s);
         }, error -> {
-            if (!isAdded() || getContext() == null) {
-                return;
+            if (isAdded() && getContext() != null) {
+                showFailedDialog(R.string.general_error);
             }
-            showFailedDialog(R.string.general_error);
         }));
     }
 
     private void onOverwriteConfirmed(final MissionCheckResult result) {
         final String sourceUrl = currentInfo.getUrl();
-        final boolean isBilibiliVideo = currentInfo.getService() == ServiceList.BiliBili
-                && dialogBinding.videoAudioGroup.getCheckedRadioButtonId() == R.id.video_button;
+        final boolean isBilibiliVideo = pendingDownloadKind == 'v'
+                && currentInfo.getService() == ServiceList.BiliBili;
 
         disposables.add(Single.fromCallable(() -> {
             if (result.state == MissionState.PendingRunning) {
@@ -1186,19 +1197,15 @@ public class DownloadDialog extends DialogFragment
         .subscribeOn(Schedulers.io())
         .observeOn(AndroidSchedulers.mainThread())
         .subscribe(storageNew -> {
-            if (!isAdded() || getContext() == null) {
-                return;
-            }
             if (storageNew != null) {
                 continueSelectedDownloadAsync(storageNew);
-            } else {
+            } else if (isAdded() && getContext() != null) {
                 showFailedDialog(R.string.error_file_creation);
             }
         }, error -> {
-            if (!isAdded() || getContext() == null) {
-                return;
+            if (isAdded() && getContext() != null) {
+                showFailedDialog(R.string.error_file_creation);
             }
-            showFailedDialog(R.string.error_file_creation);
         }));
     }
 
@@ -1209,19 +1216,15 @@ public class DownloadDialog extends DialogFragment
         .observeOn(AndroidSchedulers.mainThread())
         .subscribe(storageNew -> {
 
-            if (!isAdded() || getContext() == null) {
-                return;
-            }
             if (storageNew != null) {
                 continueSelectedDownloadAsync(storageNew);
-            } else {
+            } else if (isAdded() && getContext() != null) {
                 showFailedDialog(R.string.error_file_creation);
             }
         }, error -> {
-            if (!isAdded() || getContext() == null) {
-                return;
+            if (isAdded() && getContext() != null) {
+                showFailedDialog(R.string.error_file_creation);
             }
-            showFailedDialog(R.string.error_file_creation);
         }));
     }
 
@@ -1243,18 +1246,14 @@ public class DownloadDialog extends DialogFragment
         .subscribeOn(Schedulers.io())
         .observeOn(AndroidSchedulers.mainThread())
         .subscribe(s -> {
-            if (!isAdded() || getContext() == null) {
-                return;
-            }
             startSelectedDownload(s);
         }, error -> {
-            if (!isAdded() || getContext() == null) {
-                return;
-            }
-            if (error instanceof SecurityException) {
-                showFailedDialog(R.string.permission_denied);
-            } else {
-                showFailedDialog(R.string.overwrite_failed);
+            if (isAdded() && getContext() != null) {
+                if (error instanceof SecurityException) {
+                    showFailedDialog(R.string.permission_denied);
+                } else {
+                    showFailedDialog(R.string.overwrite_failed);
+                }
             }
         }));
     }
@@ -1262,8 +1261,8 @@ public class DownloadDialog extends DialogFragment
     private void startSelectedDownload(@NonNull final StoredFileHelper storage) {
         final Stream selectedStream;
         Stream secondaryStream = null;
-        final char kind;
-        int threads = dialogBinding.threads.getProgress() + 1;
+        final char kind = pendingDownloadKind;
+        int threads = kind == 's' ? 1 : pendingDownloadThreads;
         final String[] urls;
         final MissionRecoveryInfo[] recoveryInfo;
         final String[] resourceDeliveryMethods;
@@ -1273,9 +1272,8 @@ public class DownloadDialog extends DialogFragment
         String[] psArgs = null;
         long nearLength = 0;
 
-        switch (dialogBinding.videoAudioGroup.getCheckedRadioButtonId()) {
-            case R.id.audio_button:
-                kind = 'a';
+        switch (kind) {
+            case 'a':
                 selectedStream = audioStreamsAdapter.getItem(selectedAudioIndex);
                 if (currentInfo.getService() == ServiceList.NicoNico) {
                     psName = Postprocessing.NICONICO_MUXER;
@@ -1285,8 +1283,7 @@ public class DownloadDialog extends DialogFragment
                     psName = Postprocessing.ALGORITHM_OGG_FROM_WEBM_DEMUXER;
                 }
                 break;
-            case R.id.video_button:
-                kind = 'v';
+            case 'v':
                 selectedStream = videoStreamsAdapter.getItem(selectedVideoIndex);
 
                 final SecondaryStreamHelper<AudioStream> secondary = videoStreamsAdapter
@@ -1317,9 +1314,7 @@ public class DownloadDialog extends DialogFragment
                     }
                 }
                 break;
-            case R.id.subtitle_button:
-                threads = 1;
-                kind = 's';
+            case 's':
                 selectedStream = subtitleStreamsAdapter.getItem(selectedSubtitleIndex);
                 if(!selectedStream.isUrl()){
                     try {
@@ -1330,13 +1325,14 @@ public class DownloadDialog extends DialogFragment
                         OutputStream outputStream = storage.context.getContentResolver().openOutputStream(storage.getUri());
                         outputStream.write(content.getBytes());
                         outputStream.close();
-                        Toast.makeText(context, getString(R.string.subtitle_saved),
-                                Toast.LENGTH_SHORT).show();
-
-                        dismiss();
+                        if (isAdded()) {
+                            Toast.makeText(context, getString(R.string.subtitle_saved),
+                                    Toast.LENGTH_SHORT).show();
+                            dismiss();
+                        }
                         return;
                     } catch (IOException e) {
-                        ErrorUtil.createNotification(requireContext(),
+                        ErrorUtil.createNotification(context.getApplicationContext(),
                                 new ErrorInfo(e, UserAction.DOWNLOAD_FAILED, "Saving subtitle"));
                         return;
                     }
@@ -1381,13 +1377,16 @@ public class DownloadDialog extends DialogFragment
             psArgs = null;
         }
 
-        DownloadManagerService.startMission(context, urls, storage, kind, threads,
+        DownloadManagerService.startMission(context.getApplicationContext(), urls, storage, kind, threads,
                 currentInfo.getUrl(), psName, psArgs, nearLength, recoveryInfo,
                 resourceDeliveryMethods, resourceManifestUrls, resourceIsUrls);
 
-        Toast.makeText(context, getString(R.string.download_has_started),
+        final Context appContext = context.getApplicationContext();
+        Toast.makeText(appContext, appContext.getString(R.string.download_has_started),
                 Toast.LENGTH_SHORT).show();
 
-        dismiss();
+        if (isAdded()) {
+            dismiss();
+        }
     }
 }
