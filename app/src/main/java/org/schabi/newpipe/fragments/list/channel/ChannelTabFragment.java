@@ -2,6 +2,9 @@ package org.schabi.newpipe.fragments.list.channel;
 
 import android.os.Bundle;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 
@@ -91,7 +94,7 @@ public class ChannelTabFragment extends BaseListInfoFragment<InfoItem, ChannelTa
     public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         restoreFromArguments();
-        setHasOptionsMenu(false);
+        setHasOptionsMenu(true);
     }
 
     void restoreFromArguments() {
@@ -130,5 +133,52 @@ public class ChannelTabFragment extends BaseListInfoFragment<InfoItem, ChannelTa
     @Override
     public void setTitle(final String title) {
         super.setTitle(channelName);
+    }
+
+    @Override
+    public String getName() {
+        return channelName;
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
+    // Menu
+    //////////////////////////////////////////////////////////////////////////*/
+
+    @Override
+    public void onCreateOptionsMenu(@NonNull final Menu menu,
+                                    @NonNull final MenuInflater inflater) {
+        super.onCreateOptionsMenu(menu, inflater);
+        inflater.inflate(R.menu.menu_channel_videos, menu);
+        setupMultiSelectMenu(menu);
+    }
+
+    @Override
+    public void onPrepareOptionsMenu(@NonNull final Menu menu) {
+        super.onPrepareOptionsMenu(menu);
+        prepareMultiSelectMenu(menu);
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(@NonNull final MenuItem item) {
+        if (handleMultiSelectMenuSelection(item)) {
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    public void handleResult(@NonNull final ChannelTabInfo result) {
+        super.handleResult(result);
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    @Override
+    public void handleNextItems(final ListExtractor.InfoItemsPage<InfoItem> result) {
+        super.handleNextItems(result);
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
     }
 }

@@ -22,6 +22,16 @@ import org.schabi.newpipe.extractor.stream.StreamInfoItem;
 import org.schabi.newpipe.util.Constants;
 import org.schabi.newpipe.views.NewPipeRecyclerView;
 
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
+import androidx.activity.OnBackPressedCallback;
+import androidx.appcompat.app.ActionBar;
+import org.schabi.newpipe.download.BulkDownloadDialog;
+import org.schabi.newpipe.util.OnClickGesture;
+import us.shandian.giga.get.PendingFetchMission;
+import us.shandian.giga.service.DownloadManagerService;
+
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +44,8 @@ import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
 public abstract class BaseListInfoFragment<I extends InfoItem, L extends ListInfo<I>>
-        extends BaseListFragment<L, ListExtractor.InfoItemsPage<I>> {
+        extends BaseListFragment<L, ListExtractor.InfoItemsPage<I>>
+        implements BulkDownloadDialog.Listener {
     protected int serviceId = Constants.NO_SERVICE_ID;
     protected String name;
     protected String url;
@@ -44,6 +55,17 @@ public abstract class BaseListInfoFragment<I extends InfoItem, L extends ListInf
     protected Page currentNextPage;
     protected Disposable currentWorker;
     protected boolean filterFutureItems;
+
+    // -----------------------------------------------------------------------
+    // Multi-select / bulk-download state
+    // -----------------------------------------------------------------------
+    protected boolean isMultiSelectMode = false;
+    protected final java.util.LinkedHashSet<StreamInfoItem> selectedItems = new java.util.LinkedHashSet<>();
+    protected MenuItem menuSelectVideos;
+    protected MenuItem menuSelectAll;
+    protected MenuItem menuDownloadSelected;
+    protected MenuItem menuCancelSelect;
+    protected OnBackPressedCallback backPressedCallback;
 
     protected BaseListInfoFragment(final UserAction errorUserAction) {
         this.errorUserAction = errorUserAction;
@@ -100,6 +122,197 @@ public abstract class BaseListInfoFragment<I extends InfoItem, L extends ListInf
         }
     }
 
+    // Multi-select / bulk-download state
+    protected boolean isMultiSelectMode = false;
+    protected final java.util.LinkedHashSet<StreamInfoItem> selectedItems = new java.util.LinkedHashSet<>();
+    protected MenuItem menuSelectVideos;
+    protected MenuItem menuSelectAll;
+    protected MenuItem menuDownloadSelected;
+    protected MenuItem menuCancelSelect;
+    protected OnBackPressedCallback backPressedCallback;
+
+    @Override
+    protected void initListeners() {
+        super.initListeners();
+        backPressedCallback = new OnBackPressedCallback(false /*initially disabled*/) {
+            @Override
+            public void handleOnBackPressed() {
+                exitMultiSelectMode();
+            }
+        };
+        requireActivity().getOnBackPressedDispatcher()
+                .addCallback(getViewLifecycleOwner(), backPressedCallback);
+    }
+
+    protected void setupMultiSelectMenu(@NonNull final Menu menu) {
+        menuSelectVideos = menu.findItem(R.id.menu_item_select_videos);
+        menuSelectAll = menu.findItem(R.id.menu_item_select_all);
+        menuDownloadSelected = menu.findItem(R.id.menu_item_download_selected);
+        menuCancelSelect = menu.findItem(R.id.menu_item_cancel_select);
+    }
+
+    protected void prepareMultiSelectMenu(@NonNull final Menu menu) {
+        if (menuSelectVideos == null) {
+            return;
+        }
+        if (isMultiSelectMode) {
+            menuSelectVideos.setVisible(false);
+            menuSelectAll.setVisible(true);
+            menuDownloadSelected.setVisible(true);
+            menuDownloadSelected.setEnabled(!selectedItems.isEmpty());
+            final long streamCount = infoListAdapter.getItemsList().stream()
+                    .filter(i -> i instanceof StreamInfoItem).count();
+            menuSelectAll.setTitle(
+                    selectedItems.size() == streamCount
+                            ? getString(R.string.deselect_all)
+                            : getString(R.string.select_all));
+            menuCancelSelect.setVisible(true);
+        } else {
+            final boolean hasItems = infoListAdapter != null
+                    && infoListAdapter.getItemsList().stream()
+                            .anyMatch(i -> i instanceof StreamInfoItem);
+            menuSelectVideos.setVisible(hasItems);
+            menuSelectAll.setVisible(false);
+            menuDownloadSelected.setVisible(false);
+            menuCancelSelect.setVisible(false);
+        }
+    }
+
+    protected boolean handleMultiSelectMenuSelection(@NonNull final MenuItem item) {
+        final int id = item.getItemId();
+        if (id == R.id.menu_item_select_videos) {
+            enterMultiSelectMode();
+            return true;
+        } else if (id == R.id.menu_item_select_all) {
+            toggleSelectAll();
+            return true;
+        } else if (id == R.id.menu_item_download_selected) {
+            if (!selectedItems.isEmpty()) {
+                openBulkDownloadDialog();
+            }
+            return true;
+        } else if (id == R.id.menu_item_cancel_select) {
+            exitMultiSelectMode();
+            return true;
+        }
+        return false;
+    }
+
+    protected void enterMultiSelectMode() {
+        if (isMultiSelectMode) {
+            return;
+        }
+        isMultiSelectMode = true;
+        selectedItems.clear();
+
+        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<StreamInfoItem>() {
+            @Override
+            public void selected(final StreamInfoItem selectedItem) {
+                if (selectedItems.contains(selectedItem)) {
+                    selectedItems.remove(selectedItem);
+                } else {
+                    selectedItems.add(selectedItem);
+                }
+                infoListAdapter.notifyDataSetChanged();
+                updateMultiSelectTitle();
+                if (activity != null) {
+                    activity.invalidateOptionsMenu();
+                }
+            }
+        });
+
+        infoListAdapter.setSelectionStateProvider(
+                item -> item instanceof StreamInfoItem
+                        && selectedItems.contains((StreamInfoItem) item));
+
+        updateMultiSelectTitle();
+        if (backPressedCallback != null) {
+            backPressedCallback.setEnabled(true);
+        }
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    protected void exitMultiSelectMode() {
+        if (!isMultiSelectMode) {
+            return;
+        }
+        isMultiSelectMode = false;
+        selectedItems.clear();
+        if (backPressedCallback != null) {
+            backPressedCallback.setEnabled(false);
+        }
+
+        initListeners();
+        infoListAdapter.setSelectionStateProvider(null);
+
+        final ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar != null) {
+            actionBar.setTitle(getName());
+        }
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    protected void toggleSelectAll() {
+        final List<InfoItem> items = infoListAdapter.getItemsList();
+        final long streamCount = items.stream()
+                .filter(i -> i instanceof StreamInfoItem).count();
+        if (selectedItems.size() == streamCount) {
+            selectedItems.clear();
+        } else {
+            for (final InfoItem i : items) {
+                if (i instanceof StreamInfoItem) {
+                    selectedItems.add((StreamInfoItem) i);
+                }
+            }
+        }
+        infoListAdapter.notifyDataSetChanged();
+        updateMultiSelectTitle();
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    protected void updateMultiSelectTitle() {
+        final ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar != null) {
+            final int count = selectedItems.size();
+            final String title = getResources().getQuantityString(
+                    R.plurals.feed_group_dialog_selection_count, count, count);
+            actionBar.setTitle(title);
+        }
+    }
+
+    protected void openBulkDownloadDialog() {
+        BulkDownloadDialog.newInstance(selectedItems.size())
+                .show(getChildFragmentManager(), "BULK_DOWNLOAD");
+    }
+
+    @Override
+    public void onBulkDownloadConfirmed(final boolean audioOnly,
+                                        @NonNull final String qualityLabel,
+                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior,
+                                        final int fetchThreads) {
+        final List<StreamInfoItem> itemsToDownload = new ArrayList<>(selectedItems);
+        exitMultiSelectMode();
+        final int fileBehavior;
+        switch (behavior) {
+            case OVERWRITE: fileBehavior = PendingFetchMission.BEHAVIOR_OVERWRITE; break;
+            case UNIQUE_NAME: fileBehavior = PendingFetchMission.BEHAVIOR_UNIQUE_NAME; break;
+            default: fileBehavior = PendingFetchMission.BEHAVIOR_SKIP; break;
+        }
+        PendingFetchMission.setMaxConcurrentFetches(fetchThreads);
+        final android.content.Context ctx = requireContext().getApplicationContext();
+        for (final StreamInfoItem item : itemsToDownload) {
+            DownloadManagerService.addPendingFetchMission(ctx,
+                    item.getServiceId(), item.getUrl(), item.getName(),
+                    audioOnly, qualityLabel, fileBehavior);
+        }
+    }
+
     @Override
     public void onDestroy() {
         super.onDestroy();
@@ -107,6 +320,11 @@ public abstract class BaseListInfoFragment<I extends InfoItem, L extends ListInf
             currentWorker.dispose();
             currentWorker = null;
         }
+        if (infoListAdapter != null) {
+            infoListAdapter.setSelectionStateProvider(null);
+        }
+        isMultiSelectMode = false;
+        selectedItems.clear();
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -311,5 +529,199 @@ public abstract class BaseListInfoFragment<I extends InfoItem, L extends ListInf
 
     public String getUrl() {
         return url;
+    }
+    @Override
+    protected void initListeners() {
+        super.initListeners();
+        backPressedCallback = new OnBackPressedCallback(false /*initially disabled*/) {
+            @Override
+            public void handleOnBackPressed() {
+                exitMultiSelectMode();
+            }
+        };
+        requireActivity().getOnBackPressedDispatcher()
+                .addCallback(getViewLifecycleOwner(), backPressedCallback);
+    }
+
+    protected void setupMultiSelectMenu(@NonNull final Menu menu) {
+        menuSelectVideos = menu.findItem(R.id.menu_item_select_videos);
+        menuSelectAll = menu.findItem(R.id.menu_item_select_all);
+        menuDownloadSelected = menu.findItem(R.id.menu_item_download_selected);
+        menuCancelSelect = menu.findItem(R.id.menu_item_cancel_select);
+    }
+
+    protected void prepareMultiSelectMenu(@NonNull final Menu menu) {
+        if (menuSelectVideos == null) {
+            return;
+        }
+        if (isMultiSelectMode) {
+            menuSelectVideos.setVisible(false);
+            menuSelectAll.setVisible(true);
+            menuDownloadSelected.setVisible(true);
+            menuDownloadSelected.setEnabled(!selectedItems.isEmpty());
+            final long streamCount = infoListAdapter.getItemsList().stream()
+                    .filter(i -> i instanceof StreamInfoItem).count();
+            menuSelectAll.setTitle(
+                    selectedItems.size() == streamCount
+                            ? getString(R.string.deselect_all)
+                            : getString(R.string.select_all));
+            menuCancelSelect.setVisible(true);
+        } else {
+            final boolean hasItems = infoListAdapter != null
+                    && infoListAdapter.getItemsList().stream()
+                            .anyMatch(i -> i instanceof StreamInfoItem);
+            menuSelectVideos.setVisible(hasItems);
+            menuSelectAll.setVisible(false);
+            menuDownloadSelected.setVisible(false);
+            menuCancelSelect.setVisible(false);
+        }
+    }
+
+    protected boolean handleMultiSelectMenuSelection(@NonNull final MenuItem item) {
+        final int id = item.getItemId();
+        if (id == R.id.menu_item_select_videos) {
+            enterMultiSelectMode();
+            return true;
+        } else if (id == R.id.menu_item_select_all) {
+            toggleSelectAll();
+            return true;
+        } else if (id == R.id.menu_item_download_selected) {
+            if (!selectedItems.isEmpty()) {
+                openBulkDownloadDialog();
+            }
+            return true;
+        } else if (id == R.id.menu_item_cancel_select) {
+            exitMultiSelectMode();
+            return true;
+        }
+        return false;
+    }
+
+    protected void enterMultiSelectMode() {
+        if (isMultiSelectMode) {
+            return;
+        }
+        isMultiSelectMode = true;
+        selectedItems.clear();
+
+        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<StreamInfoItem>() {
+            @Override
+            public void selected(final StreamInfoItem selectedItem) {
+                if (selectedItems.contains(selectedItem)) {
+                    selectedItems.remove(selectedItem);
+                } else {
+                    selectedItems.add(selectedItem);
+                }
+                infoListAdapter.notifyDataSetChanged();
+                updateMultiSelectTitle();
+                if (activity != null) {
+                    activity.invalidateOptionsMenu();
+                }
+            }
+        });
+
+        infoListAdapter.setSelectionStateProvider(
+                item -> item instanceof StreamInfoItem
+                        && selectedItems.contains((StreamInfoItem) item));
+
+        updateMultiSelectTitle();
+        if (backPressedCallback != null) {
+            backPressedCallback.setEnabled(true);
+        }
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    protected void exitMultiSelectMode() {
+        if (!isMultiSelectMode) {
+            return;
+        }
+        isMultiSelectMode = false;
+        selectedItems.clear();
+        if (backPressedCallback != null) {
+            backPressedCallback.setEnabled(false);
+        }
+
+        initListeners();
+        infoListAdapter.setSelectionStateProvider(null);
+
+        final ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar != null) {
+            actionBar.setTitle(getName());
+        }
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    protected void toggleSelectAll() {
+        final List<InfoItem> items = infoListAdapter.getItemsList();
+        final long streamCount = items.stream()
+                .filter(i -> i instanceof StreamInfoItem).count();
+        if (selectedItems.size() == streamCount) {
+            selectedItems.clear();
+        } else {
+            for (final InfoItem i : items) {
+                if (i instanceof StreamInfoItem) {
+                    selectedItems.add((StreamInfoItem) i);
+                }
+            }
+        }
+        infoListAdapter.notifyDataSetChanged();
+        updateMultiSelectTitle();
+        if (activity != null) {
+            activity.invalidateOptionsMenu();
+        }
+    }
+
+    protected void updateMultiSelectTitle() {
+        final ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar != null) {
+            final int count = selectedItems.size();
+            final String title = getResources().getQuantityString(
+                    R.plurals.feed_group_dialog_selection_count, count, count);
+            actionBar.setTitle(title);
+        }
+    }
+
+    protected void openBulkDownloadDialog() {
+        BulkDownloadDialog.newInstance(selectedItems.size())
+                .show(getChildFragmentManager(), "BULK_DOWNLOAD");
+    }
+
+    @Override
+    public void onBulkDownloadConfirmed(final boolean audioOnly,
+                                        @NonNull final String qualityLabel,
+                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior,
+                                        final int fetchThreads) {
+        final List<StreamInfoItem> itemsToDownload = new ArrayList<>(selectedItems);
+        exitMultiSelectMode();
+        final int fileBehavior;
+        switch (behavior) {
+            case OVERWRITE: fileBehavior = PendingFetchMission.BEHAVIOR_OVERWRITE; break;
+            case UNIQUE_NAME: fileBehavior = PendingFetchMission.BEHAVIOR_UNIQUE_NAME; break;
+            default: fileBehavior = PendingFetchMission.BEHAVIOR_SKIP; break;
+        }
+        PendingFetchMission.setMaxConcurrentFetches(fetchThreads);
+        final android.content.Context ctx = requireContext().getApplicationContext();
+        for (final StreamInfoItem item : itemsToDownload) {
+            DownloadManagerService.addPendingFetchMission(ctx,
+                    item.getServiceId(), item.getUrl(), item.getName(),
+                    audioOnly, qualityLabel, fileBehavior);
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (currentWorker != null) {
+            currentWorker.dispose();
+            currentWorker = null;
+        }
+        if (infoListAdapter != null) {
+            infoListAdapter.setSelectionStateProvider(null);
+        }
+        isMultiSelectMode = false;
     }
 }
