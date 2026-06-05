@@ -100,16 +100,7 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
     private long streamCount;
     private long playlistOverallDurationSeconds;
 
-    // -----------------------------------------------------------------------
-    // Multi-select / bulk-download state
-    // -----------------------------------------------------------------------
-    private boolean isMultiSelectMode = false;
-    private final LinkedHashSet<StreamInfoItem> selectedItems = new LinkedHashSet<>();
-    private MenuItem menuSelectVideos;
-    private MenuItem menuSelectAll;
-    private MenuItem menuDownloadSelected;
-    private MenuItem menuCancelSelect;
-    private OnBackPressedCallback backPressedCallback;
+
 
     public static PlaylistFragment getInstance(final int serviceId, final String url,
                                                final String name) {
@@ -161,19 +152,7 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
         infoListAdapter.setUseMiniVariant(true);
     }
 
-    @Override
-    protected void initListeners() {
-        super.initListeners();
-        // Register back-press callback for multi-select exit, tied to viewLifecycleOwner.
-        backPressedCallback = new OnBackPressedCallback(false /*initially disabled*/) {
-            @Override
-            public void handleOnBackPressed() {
-                exitMultiSelectMode();
-            }
-        };
-        requireActivity().getOnBackPressedDispatcher()
-                .addCallback(getViewLifecycleOwner(), backPressedCallback);
-    }
+
 
     private PlayQueue getPlayQueueStartingAt(final StreamInfoItem infoItem) {
         return getPlayQueue(Math.max(infoListAdapter.getItemsList().indexOf(infoItem), 0));
@@ -207,48 +186,19 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
         }
         super.onCreateOptionsMenu(menu, inflater);
         inflater.inflate(R.menu.menu_playlist, menu);
-
+ 
         playlistBookmarkButton = menu.findItem(R.id.menu_item_bookmark);
-        menuSelectVideos     = menu.findItem(R.id.menu_item_select_videos);
-        menuSelectAll        = menu.findItem(R.id.menu_item_select_all);
-        menuDownloadSelected = menu.findItem(R.id.menu_item_download_selected);
-        menuCancelSelect     = menu.findItem(R.id.menu_item_cancel_select);
-
+        setupMultiSelectMenu(menu);
+ 
         updateBookmarkButtons();
     }
-
+ 
     @Override
     public void onPrepareOptionsMenu(@NonNull final Menu menu) {
         super.onPrepareOptionsMenu(menu);
-        if (menuSelectVideos == null) {
-            return;
-        }
-        if (isMultiSelectMode) {
-            menuSelectVideos.setVisible(false);
-            if (playlistBookmarkButton != null) {
-                playlistBookmarkButton.setVisible(false);
-            }
-            menuSelectAll.setVisible(true);
-            menuDownloadSelected.setVisible(true);
-            menuDownloadSelected.setEnabled(!selectedItems.isEmpty());
-            final long streamCount = infoListAdapter.getItemsList().stream()
-                    .filter(i -> i instanceof StreamInfoItem).count();
-            menuSelectAll.setTitle(
-                    selectedItems.size() == streamCount
-                    ? getString(R.string.deselect_all)
-                    : getString(R.string.select_all));
-            menuCancelSelect.setVisible(true);
-        } else {
-            final boolean hasItems = infoListAdapter != null
-                    && infoListAdapter.getItemsList().stream()
-                            .anyMatch(i -> i instanceof StreamInfoItem);
-            menuSelectVideos.setVisible(hasItems);
-            if (playlistBookmarkButton != null) {
-                playlistBookmarkButton.setVisible(true);
-            }
-            menuSelectAll.setVisible(false);
-            menuDownloadSelected.setVisible(false);
-            menuCancelSelect.setVisible(false);
+        prepareMultiSelectMenu(menu);
+        if (playlistBookmarkButton != null) {
+            playlistBookmarkButton.setVisible(!isMultiSelectMode);
         }
     }
 
@@ -270,12 +220,6 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
         }
 
         bookmarkReactor = null;
-        // Clean up multi-select state
-        if (infoListAdapter != null) {
-            infoListAdapter.setSelectionStateProvider(null);
-        }
-        isMultiSelectMode = false;
-        selectedItems.clear();
     }
 
     @Override
@@ -345,135 +289,14 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
                 break;
             // Multi-select items
             case R.id.menu_item_select_videos:
-                enterMultiSelectMode();
-                return true;
             case R.id.menu_item_select_all:
-                toggleSelectAll();
-                return true;
             case R.id.menu_item_download_selected:
-                if (!selectedItems.isEmpty()) {
-                    openBulkDownloadDialog();
-                }
-                return true;
             case R.id.menu_item_cancel_select:
-                exitMultiSelectMode();
-                return true;
+                return handleMultiSelectMenuSelection(item);
             default:
                 return super.onOptionsItemSelected(item);
         }
         return true;
-    }
-
-    // -----------------------------------------------------------------------
-    // Multi-select helpers
-    // -----------------------------------------------------------------------
-
-    private void enterMultiSelectMode() {
-        if (isMultiSelectMode) {
-            return;
-        }
-        isMultiSelectMode = true;
-        selectedItems.clear();
-
-        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<StreamInfoItem>() {
-            @Override
-            public void selected(final StreamInfoItem selectedItem) {
-                // Fully replaces normal navigation — toggles selection only.
-                if (selectedItems.contains(selectedItem)) {
-                    selectedItems.remove(selectedItem);
-                } else {
-                    selectedItems.add(selectedItem);
-                }
-                infoListAdapter.notifyDataSetChanged();
-                updateMultiSelectTitle();
-                activity.invalidateOptionsMenu();
-            }
-            // held() not overridden → no-op; long-press behaviour is undefined in multi-select.
-        });
-
-        infoListAdapter.setSelectionStateProvider(
-                item -> item instanceof StreamInfoItem
-                        && selectedItems.contains((StreamInfoItem) item));
-
-        updateMultiSelectTitle();
-        backPressedCallback.setEnabled(true);
-        activity.invalidateOptionsMenu();
-    }
-
-    private void exitMultiSelectMode() {
-        if (!isMultiSelectMode) {
-            return;
-        }
-        isMultiSelectMode = false;
-        selectedItems.clear();
-        backPressedCallback.setEnabled(false);
-
-        initListeners(); // restores normal stream-click listener
-        infoListAdapter.setSelectionStateProvider(null);
-
-        final ActionBar actionBar = activity.getSupportActionBar();
-        if (actionBar != null) {
-            actionBar.setTitle(name);
-        }
-        activity.invalidateOptionsMenu();
-    }
-
-    private void toggleSelectAll() {
-        final List<org.schabi.newpipe.extractor.InfoItem> items = infoListAdapter.getItemsList();
-        final long streamCount = items.stream()
-                .filter(i -> i instanceof StreamInfoItem).count();
-        if (selectedItems.size() == streamCount) {
-            selectedItems.clear();
-        } else {
-            for (final org.schabi.newpipe.extractor.InfoItem i : items) {
-                if (i instanceof StreamInfoItem) {
-                    selectedItems.add((StreamInfoItem) i);
-                }
-            }
-        }
-        infoListAdapter.notifyDataSetChanged();
-        updateMultiSelectTitle();
-        activity.invalidateOptionsMenu();
-    }
-
-    private void updateMultiSelectTitle() {
-        final ActionBar actionBar = activity.getSupportActionBar();
-        if (actionBar != null) {
-            final int count = selectedItems.size();
-            final String title = getResources().getQuantityString(
-                    R.plurals.feed_group_dialog_selection_count, count, count);
-            actionBar.setTitle(title);
-        }
-    }
-
-    /** Opens BulkDownloadDialog when the user taps "Download (N)" in multi-select mode. */
-    private void openBulkDownloadDialog() {
-        BulkDownloadDialog.newInstance(selectedItems.size())
-                .show(getChildFragmentManager(), "BULK_DOWNLOAD");
-    }
-
-    // BulkDownloadDialog.Listener implementation
-    @Override
-    public void onBulkDownloadConfirmed(final boolean audioOnly,
-                                        @NonNull final String qualityLabel,
-                                        @NonNull final BulkDownloadDialog.ExistingFileBehavior behavior,
-                                        final int fetchThreads) {
-        final java.util.List<StreamInfoItem> itemsToDownload =
-                new java.util.ArrayList<>(selectedItems);
-        exitMultiSelectMode();
-        final int fileBehavior;
-        switch (behavior) {
-            case OVERWRITE: fileBehavior = PendingFetchMission.BEHAVIOR_OVERWRITE; break;
-            case UNIQUE_NAME: fileBehavior = PendingFetchMission.BEHAVIOR_UNIQUE_NAME; break;
-            default: fileBehavior = PendingFetchMission.BEHAVIOR_SKIP; break;
-        }
-        PendingFetchMission.setMaxConcurrentFetches(fetchThreads);
-        final android.content.Context ctx = requireContext().getApplicationContext();
-        for (final StreamInfoItem item : itemsToDownload) {
-            DownloadManagerService.addPendingFetchMission(ctx,
-                    item.getServiceId(), item.getUrl(), item.getName(),
-                    audioOnly, qualityLabel, fileBehavior);
-        }
     }
 
 
