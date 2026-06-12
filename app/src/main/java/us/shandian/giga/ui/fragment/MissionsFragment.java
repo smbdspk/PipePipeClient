@@ -192,35 +192,35 @@ public class MissionsFragment extends Fragment {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case R.id.switch_mode:
-                mLinear = !mLinear;
-                updateList();
-                return true;
-            case R.id.clear_list:
-                showClearDownloadHistoryPrompt();
-                return true;
-            case R.id.start_downloads:
-                mBinder.getDownloadManager().startAllMissions();
-                return true;
-            case R.id.pause_downloads:
-                mBinder.getDownloadManager().pauseAllMissions(false);
-                mAdapter.refreshMissionItems();// update items view
-                return true;
-            case R.id.retry_downloads:
-                mBinder.getDownloadManager().retryAllErrorMissions();
-                mAdapter.refreshMissionItems();
-                return true;
-            case R.id.delete_errored:
-                mBinder.getDownloadManager().deleteAllErroredMissions();
-                mAdapter.refreshMissionItems();
-                return true;
-            case R.id.delete_fetches:
-                mBinder.getDownloadManager().deleteAllFetchMissions();
-                mAdapter.refreshMissionItems();
-                return true;
-            default:
-                return super.onOptionsItemSelected(item);
+        int id = item.getItemId();
+        if (id == R.id.switch_mode) {
+            mLinear = !mLinear;
+            updateList();
+            return true;
+        } else if (id == R.id.clear_list) {
+            showClearDownloadHistoryPrompt();
+            return true;
+        } else if (id == R.id.start_downloads) {
+            mBinder.getDownloadManager().startAllMissions();
+            return true;
+        } else if (id == R.id.pause_downloads) {
+            mBinder.getDownloadManager().pauseAllMissions(false);
+            mAdapter.refreshMissionItems();// update items view
+            return true;
+        } else if (id == R.id.retry_downloads) {
+            mBinder.getDownloadManager().retryAllErrorMissions();
+            mAdapter.refreshMissionItems();
+            return true;
+        } else if (id == R.id.delete_errored) {
+            mBinder.getDownloadManager().deleteAllErroredMissions();
+            mAdapter.refreshMissionItems();
+            return true;
+        } else if (id == R.id.delete_fetches) {
+            mBinder.getDownloadManager().deleteAllFetchMissions();
+            mAdapter.refreshMissionItems();
+            return true;
+        } else {
+            return super.onOptionsItemSelected(item);
         }
     }
 

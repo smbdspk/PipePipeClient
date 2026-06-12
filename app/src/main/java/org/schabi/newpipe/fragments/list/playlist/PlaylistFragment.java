@@ -251,50 +251,44 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
     }
     @Override
     public boolean onOptionsItemSelected(final MenuItem item) {
-        switch (item.getItemId()) {
-            case R.id.action_settings:
-                NavigationHelper.openSettings(requireContext());
-                break;
-            case R.id.menu_item_openInBrowser:
-                ShareUtils.openUrlInBrowser(requireContext(), url);
-                break;
-            case R.id.menu_item_share:
-                if (currentInfo != null) {
-                    ShareUtils.shareText(requireContext(), name, url,
-                            currentInfo.getThumbnailUrl());
-                }
-                break;
-            case R.id.menu_item_bookmark:
-                onBookmarkClicked();
-                break;
-            case R.id.menu_item_append_playlist:
-                if(isInfinitePlayList) {
-                    // Popup a dialog to tell user explicitly that infinite playlist cannot be appended
-                    new AlertDialog.Builder(requireContext())
-                            .setTitle(R.string.add_failed)
-                            .setMessage(R.string.append_playlist_not_supported)
-                            .setPositiveButton(R.string.ok, null)
-                            .show();
-                    return true;
-                }
-                disposables.add(PlaylistDialog.createCorrespondingDialog(
-                        getContext(),
-                        getPlayQueue()
-                                .getStreams()
-                                .stream()
-                                .map(StreamEntity::new)
-                                .collect(Collectors.toList()),
-                        dialog -> dialog.show(getFM(), TAG)
-                ));
-                break;
-            // Multi-select items
-            case R.id.menu_item_select_videos:
-            case R.id.menu_item_select_all:
-            case R.id.menu_item_download_selected:
-            case R.id.menu_item_cancel_select:
-                return handleMultiSelectMenuSelection(item);
-            default:
-                return super.onOptionsItemSelected(item);
+        int itemId = item.getItemId();
+        if (itemId == R.id.action_settings) {
+            NavigationHelper.openSettings(requireContext());
+        } else if (itemId == R.id.menu_item_openInBrowser) {
+            ShareUtils.openUrlInBrowser(requireContext(), url);
+        } else if (itemId == R.id.menu_item_share) {
+            if (currentInfo != null) {
+                ShareUtils.shareText(requireContext(), name, url,
+                        currentInfo.getThumbnailUrl());
+            }
+        } else if (itemId == R.id.menu_item_bookmark) {
+            onBookmarkClicked();
+        } else if (itemId == R.id.menu_item_append_playlist) {
+            if (isInfinitePlayList) {
+                // Popup a dialog to tell user explicitly that infinite playlist cannot be appended
+                new AlertDialog.Builder(requireContext())
+                        .setTitle(R.string.add_failed)
+                        .setMessage(R.string.append_playlist_not_supported)
+                        .setPositiveButton(R.string.ok, null)
+                        .show();
+                return true;
+            }
+            disposables.add(PlaylistDialog.createCorrespondingDialog(
+                    getContext(),
+                    getPlayQueue()
+                            .getStreams()
+                            .stream()
+                            .map(StreamEntity::new)
+                            .collect(Collectors.toList()),
+                    dialog -> dialog.show(getFM(), TAG)
+            ));
+        } else if (itemId == R.id.menu_item_select_videos ||
+                   itemId == R.id.menu_item_select_all ||
+                   itemId == R.id.menu_item_download_selected ||
+                   itemId == R.id.menu_item_cancel_select) {
+            return handleMultiSelectMenuSelection(item);
+        } else {
+            return super.onOptionsItemSelected(item);
         }
         return true;
     }

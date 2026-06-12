@@ -778,51 +778,48 @@ public class DownloadDialog extends DialogFragment
         filenameTmp = getNameEditText().concat(".");
         pendingDownloadThreads = dialogBinding.threads.getProgress() + 1;
 
-        switch (dialogBinding.videoAudioGroup.getCheckedRadioButtonId()) {
-            case R.id.audio_button:
-                pendingDownloadKind = 'a';
-                selectedMediaType = getString(R.string.last_download_type_audio_key);
-                mainStorage = mainStorageAudio;
-                format = audioStreamsAdapter.getItem(selectedAudioIndex).getFormat();
-                if (format == MediaFormat.WEBMA_OPUS) {
-                    mimeTmp = "audio/ogg";
-                    filenameTmp += "opus";
-                } else if (format != null) {
-                    mimeTmp = format.mimeType;
-                    filenameTmp += format.suffix;
-                } else {
-                    mimeTmp = "audio/mp4";
-                    filenameTmp += "m4a";
-                }
-                break;
-            case R.id.video_button:
-                pendingDownloadKind = 'v';
-                selectedMediaType = getString(R.string.last_download_type_video_key);
-                mainStorage = mainStorageVideo;
-                format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
-                if (format != null) {
-                    mimeTmp = format.mimeType;
-                    filenameTmp += format.suffix;
-                } else {
-                    mimeTmp = "video/mp4";
-                    filenameTmp += "mp4";
-                }
-                break;
-            case R.id.subtitle_button:
-                pendingDownloadKind = 's';
-                selectedMediaType = getString(R.string.last_download_type_subtitle_key);
-                mainStorage = mainStorageVideo; // subtitle & video files go together
-                format = subtitleStreamsAdapter.getItem(selectedSubtitleIndex).getFormat();
-                if (format != null) {
-                    mimeTmp = format.mimeType;
-                    filenameTmp += (format == MediaFormat.TTML ? MediaFormat.SRT : format).suffix;
-                } else {
-                    mimeTmp = "text/vtt";
-                    filenameTmp += "vtt";
-                }
-                break;
-            default:
-                throw new RuntimeException("No stream selected");
+        int checkedId = dialogBinding.videoAudioGroup.getCheckedRadioButtonId();
+        if (checkedId == R.id.audio_button) {
+            pendingDownloadKind = 'a';
+            selectedMediaType = getString(R.string.last_download_type_audio_key);
+            mainStorage = mainStorageAudio;
+            format = audioStreamsAdapter.getItem(selectedAudioIndex).getFormat();
+            if (format == MediaFormat.WEBMA_OPUS) {
+                mimeTmp = "audio/ogg";
+                filenameTmp += "opus";
+            } else if (format != null) {
+                mimeTmp = format.mimeType;
+                filenameTmp += format.suffix;
+            } else {
+                mimeTmp = "audio/mp4";
+                filenameTmp += "m4a";
+            }
+        } else if (checkedId == R.id.video_button) {
+            pendingDownloadKind = 'v';
+            selectedMediaType = getString(R.string.last_download_type_video_key);
+            mainStorage = mainStorageVideo;
+            format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
+            if (format != null) {
+                mimeTmp = format.mimeType;
+                filenameTmp += format.suffix;
+            } else {
+                mimeTmp = "video/mp4";
+                filenameTmp += "mp4";
+            }
+        } else if (checkedId == R.id.subtitle_button) {
+            pendingDownloadKind = 's';
+            selectedMediaType = getString(R.string.last_download_type_subtitle_key);
+            mainStorage = mainStorageVideo; // subtitle & video files go together
+            format = subtitleStreamsAdapter.getItem(selectedSubtitleIndex).getFormat();
+            if (format != null) {
+                mimeTmp = format.mimeType;
+                filenameTmp += (format == MediaFormat.TTML ? MediaFormat.SRT : format).suffix;
+            } else {
+                mimeTmp = "text/vtt";
+                filenameTmp += "vtt";
+            }
+        } else {
+            throw new RuntimeException("No stream selected");
         }
 
         if (!askForSavePath

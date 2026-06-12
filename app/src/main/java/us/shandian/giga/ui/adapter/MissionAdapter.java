@@ -690,45 +690,44 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         DownloadMission mission = h.item.mission instanceof DownloadMission ? (DownloadMission) h.item.mission : null;
 
         if (mission != null) {
-            switch (id) {
-                case R.id.start:
+            if (id == R.id.start) {
+                h.status.setText(UNDEFINED_PROGRESS);
+                mDownloadManager.resumeMission(mission);
+                return true;
+            } else if (id == R.id.pause) {
+                mDownloadManager.pauseMission(mission);
+                return true;
+            } else if (id == R.id.error_message_view) {
+                showError(mission);
+                return true;
+            } else if (id == R.id.queue) {
+                boolean flag = !h.queue.isChecked();
+                h.queue.setChecked(flag);
+                mission.setEnqueued(flag);
+                updateProgress(h);
+                return true;
+            } else if (id == R.id.retry) {
+                if (mission.isPsRunning()) {
+                    mission.psContinue(true);
+                } else if (mission instanceof PendingFetchMission) {
+                    ((PendingFetchMission) mission).refetch();
                     h.status.setText(UNDEFINED_PROGRESS);
-                    mDownloadManager.resumeMission(mission);
-                    return true;
-                case R.id.pause:
-                    mDownloadManager.pauseMission(mission);
-                    return true;
-                case R.id.error_message_view:
-                    showError(mission);
-                    return true;
-                case R.id.queue:
-                    boolean flag = !h.queue.isChecked();
-                    h.queue.setChecked(flag);
-                    mission.setEnqueued(flag);
-                    updateProgress(h);
-                    return true;
-                case R.id.retry:
-                    if (mission.isPsRunning()) {
-                        mission.psContinue(true);
-                    } else if (mission instanceof PendingFetchMission) {
-                        ((PendingFetchMission) mission).refetch();
-                        h.status.setText(UNDEFINED_PROGRESS);
-                        h.progress.setMarquee(true);
-                    } else if (mission.source != null && !mission.source.isEmpty()
-                            && mission.isPsFailed()) {
-                        mDownloadManager.convertToPendingFetchMission(mission);
-                        applyChanges();
-                    } else {
-                        mDownloadManager.tryRecover(mission);
-                        if (mission.storage.isInvalid())
-                            mRecover.tryRecover(mission);
-                        else
-                            recoverMission(mission);
-                    }
-                    return true;
-                case R.id.cancel:
-                    mission.psContinue(false);
-                    return false;
+                    h.progress.setMarquee(true);
+                } else if (mission.source != null && !mission.source.isEmpty()
+                        && mission.isPsFailed()) {
+                    mDownloadManager.convertToPendingFetchMission(mission);
+                    applyChanges();
+                } else {
+                    mDownloadManager.tryRecover(mission);
+                    if (mission.storage.isInvalid())
+                        mRecover.tryRecover(mission);
+                    else
+                        recoverMission(mission);
+                }
+                return true;
+            } else if (id == R.id.cancel) {
+                mission.psContinue(false);
+                return false;
             }
         }
 
