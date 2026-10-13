@@ -41,7 +41,9 @@ public class FileStream extends SharpStream {
 
     @Override
     public long skip(long pos) throws IOException {
-        return source.skipBytes((int) pos);
+        long current = source.getFilePointer();
+        source.seek(current + pos);
+        return pos;
     }
 
     @Override

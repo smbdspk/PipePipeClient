@@ -48,6 +48,91 @@ public class StoredFileHelper implements Serializable {
     public String srcName;
     private String srcType;
 
+    public StoredFileHelper() {
+    }
+
+    @NonNull
+    public static StoredFileHelper fromExistingUri(@NonNull final Context context,
+                                                   @NonNull final Uri path,
+                                                   @Nullable final String tag) {
+        return fromExistingUri(context, path, tag, null);
+    }
+
+    @NonNull
+    public static StoredFileHelper fromExistingUri(@NonNull final Context context,
+                                                   @NonNull final Uri path,
+                                                   @Nullable final String tag,
+                                                   @Nullable final String cachedName) {
+        final StoredFileHelper instance = new StoredFileHelper();
+        instance.context = context.getApplicationContext();
+        instance.tag = tag == null ? "" : tag;
+        instance.source = path.toString();
+
+        if (path.getScheme() == null
+                || path.getScheme().equalsIgnoreCase(ContentResolver.SCHEME_FILE)) {
+            instance.ioFile = new File(URI.create(instance.source));
+            instance.srcName = cachedName != null ? cachedName : instance.ioFile.getName();
+            final File parent = instance.ioFile.getParentFile();
+            if (parent != null) {
+                instance.sourceTree = Uri.fromFile(parent).toString();
+            }
+        } else {
+            instance.docFile = DocumentFile.fromSingleUri(context, path);
+            if (cachedName != null) {
+                instance.srcName = cachedName;
+            } else {
+                instance.srcName = extractNameFromUri(context, path);
+            }
+        }
+        instance.srcType = instance.getType();
+        return instance;
+    }
+
+    @Nullable
+    public static String extractNameFromUri(@Nullable final Context context,
+                                            @NonNull final Uri uri) {
+        try {
+            if (context != null && DocumentsContract.isDocumentUri(context, uri)) {
+                final String docId = DocumentsContract.getDocumentId(uri);
+                if (docId != null) {
+                    final int lastSlash = Math.max(docId.lastIndexOf('/'), docId.lastIndexOf('%'));
+                    final String rawName;
+                    if (lastSlash >= 0 && lastSlash < docId.length() - 1) {
+                        rawName = docId.substring(lastSlash + 1);
+                    } else {
+                        final int colon = docId.lastIndexOf(':');
+                        if (colon >= 0 && colon < docId.length() - 1) {
+                            rawName = docId.substring(colon + 1);
+                        } else {
+                            rawName = docId;
+                        }
+                    }
+                    final String decoded = Uri.decode(rawName);
+                    if (decoded != null && decoded.contains(".")) {
+                        return decoded;
+                    }
+                }
+            }
+        } catch (final Exception ignored) {
+        }
+
+        try {
+            final String lastSegment = uri.getLastPathSegment();
+            if (lastSegment != null) {
+                final int lastSlash = Math.max(lastSegment.lastIndexOf('/'), lastSegment.lastIndexOf('%'));
+                final String rawName = (lastSlash >= 0 && lastSlash < lastSegment.length() - 1)
+                        ? lastSegment.substring(lastSlash + 1) : lastSegment;
+                final String decoded = Uri.decode(rawName);
+                if (decoded != null && decoded.contains(".")) {
+                    return decoded;
+                }
+            }
+        } catch (final Exception ignored) {
+        }
+
+        return null;
+    }
+
     public StoredFileHelper(final Context context, final Uri uri, final String mime) {
         if (FilePickerActivityHelper.isOwnFileUri(context, uri)) {
             ioFile = Utils.getFileForUri(uri);
@@ -159,6 +244,15 @@ public class StoredFileHelper implements Serializable {
             this.sourceTree = parent.toString();
         }
 
+        if (sourceTree == null && source != null) {
+            if (ioFile != null) {
+                final File parentDir = ioFile.getParentFile();
+                if (parentDir != null) {
+                    this.sourceTree = Uri.fromFile(parentDir).toString();
+                }
+            }
+        }
+
         this.srcName = getName();
         this.srcType = getType();
     }
@@ -266,23 +360,38 @@ public class StoredFileHelper implements Serializable {
     }
 
     public String getName() {
-        if (source == null) {
+        if (srcName != null) {
             return srcName;
+        }
+        if (source == null) {
+            return null;
         } else if (docFile == null) {
-            return ioFile.getName();
+            srcName = ioFile.getName();
+            return srcName;
         }
 
         final String name = docFile.getName();
-        return name == null ? srcName : name;
+        if (name != null) {
+            srcName = name;
+            return name;
+        }
+        return null;
     }
 
     public String getType() {
-        if (source == null || docFile == null) {
+        if (srcType != null) {
             return srcType;
+        }
+        if (source == null || docFile == null) {
+            return null;
         }
 
         final String type = docFile.getType();
-        return type == null ? srcType : type;
+        if (type != null) {
+            srcType = type;
+            return type;
+        }
+        return null;
     }
 
     public String getTag() {
@@ -364,21 +473,26 @@ public class StoredFileHelper implements Serializable {
             return true;
         }
 
+        if (storage == null) {
+            return false;
+        }
+
         // note: do not compare tags, files can have the same parent folder
         //if (stringMismatch(this.tag, storage.tag)) return false;
 
-        if (stringMismatch(getLowerCase(this.sourceTree), getLowerCase(this.sourceTree))) {
+        if (this.sourceTree != null && storage.sourceTree != null
+                && stringMismatch(getLowerCase(this.sourceTree), getLowerCase(storage.sourceTree))) {
             return false;
         }
 
         if (this.isInvalid() || storage.isInvalid()) {
-            if (this.srcName == null || storage.srcName == null || this.srcType == null
-                    || storage.srcType == null) {
+            final String name1 = this.getName();
+            final String name2 = storage.getName();
+            if (name1 == null || name2 == null) {
                 return false;
             }
 
-            return this.srcName.equalsIgnoreCase(storage.srcName)
-                    && this.srcType.equalsIgnoreCase(storage.srcType);
+            return name1.equalsIgnoreCase(name2);
         }
 
         if (this.isDirect() != storage.isDirect()) {
@@ -389,8 +503,29 @@ public class StoredFileHelper implements Serializable {
             return this.ioFile.getPath().equalsIgnoreCase(storage.ioFile.getPath());
         }
 
-        return DocumentsContract.getDocumentId(this.docFile.getUri())
-                .equalsIgnoreCase(DocumentsContract.getDocumentId(storage.docFile.getUri()));
+        if (this.docFile != null && storage.docFile != null) {
+            if (this.docFile.getUri().equals(storage.docFile.getUri())) {
+                return true;
+            }
+            try {
+                if (DocumentsContract.getDocumentId(this.docFile.getUri())
+                        .equalsIgnoreCase(DocumentsContract.getDocumentId(storage.docFile.getUri()))) {
+                    return true;
+                }
+            } catch (final Exception ignored) {
+                if (this.docFile.getUri().toString().equalsIgnoreCase(storage.docFile.getUri().toString())) {
+                    return true;
+                }
+            }
+
+            final String name1 = this.getName();
+            final String name2 = storage.getName();
+            if (name1 != null && name2 != null && name1.equalsIgnoreCase(name2)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     @NonNull

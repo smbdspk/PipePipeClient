@@ -213,7 +213,14 @@ public class StoredDirectoryHelper {
         }
 
         final DocumentFile res = findFileSAFHelper(context, docTree, filename);
-        return (res == null || res.length() > 0) ? null : res.getUri();
+        return res == null ? null : res.getUri();
+    }
+
+    public boolean fileExists(final String filename) {
+        if (docTree != null) {
+            return findFileSAFHelper(context, docTree, filename) != null;
+        }
+        return new File(ioTree, filename).exists();
     }
 
     /**
@@ -330,9 +337,9 @@ public class StoredDirectoryHelper {
      * @return A {@link DocumentFile} contain the reference, otherwise, null
      */
     public static DocumentFile findFileSAFHelper(@Nullable final Context context, final DocumentFile tree,
-                                          final String filename) {
-        if (context == null) {
-            return tree.findFile(filename); // warning: this is very slow
+                                                 final String filename) {
+        if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            return tree.findFile(filename);
         }
 
         if (!tree.canRead()) {
@@ -342,33 +349,29 @@ public class StoredDirectoryHelper {
         final int name = 0;
         final int documentId = 1;
 
-        // LOWER() SQL function is not supported
-        final String selection = COLUMN_DISPLAY_NAME + " = ?";
-        //final String selection = COLUMN_DISPLAY_NAME + " LIKE ?%";
-
         final Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(tree.getUri(),
                 DocumentsContract.getDocumentId(tree.getUri()));
         final String[] projection = {COLUMN_DISPLAY_NAME, COLUMN_DOCUMENT_ID};
         final ContentResolver contentResolver = context.getContentResolver();
 
-        final String lowerFilename = filename.toLowerCase();
+        try (Cursor cursor = contentResolver.query(childrenUri, projection, null, null, null)) {
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    if (cursor.isNull(name)) {
+                        continue;
+                    }
 
-        try (Cursor cursor = contentResolver.query(childrenUri, projection, selection,
-                new String[]{lowerFilename}, null)) {
-            if (cursor == null) {
-                return null;
-            }
-
-            while (cursor.moveToNext()) {
-                if (cursor.isNull(name)
-                        || !cursor.getString(name).toLowerCase().startsWith(lowerFilename)) {
-                    continue;
+                    final String docName = cursor.getString(name);
+                    if (filename.equalsIgnoreCase(docName)) {
+                        return DocumentFile.fromSingleUri(context,
+                                DocumentsContract.buildDocumentUriUsingTree(tree.getUri(),
+                                        cursor.getString(documentId)));
+                    }
                 }
-
-                return DocumentFile.fromSingleUri(context,
-                        DocumentsContract.buildDocumentUriUsingTree(tree.getUri(),
-                                cursor.getString(documentId)));
             }
+        } catch (final Exception ignored) {
+            // Fall back to framework findFile if cursor query is unsupported by provider
+            return tree.findFile(filename);
         }
 
         return null;
