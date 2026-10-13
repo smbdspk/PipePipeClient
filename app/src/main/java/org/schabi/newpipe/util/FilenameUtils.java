@@ -12,17 +12,107 @@ import java.util.regex.Pattern;
 public final class FilenameUtils {
     private static final String CHARSET_MOST_SPECIAL = "[\\n\\r|?*<\":\\\\>/]+";
     private static final String CHARSET_ONLY_LETTERS_AND_DIGITS = "[^\\w\\d]+";
+    private static final String CHARSET_ILLEGAL_FS = "[/\\\\:*?\"<>|]";
 
-    private FilenameUtils() { }
+    private static final Pattern PATTERN_MOST_SPECIAL = Pattern.compile(CHARSET_MOST_SPECIAL);
+    private static final Pattern PATTERN_LETTERS_DIGITS = Pattern.compile(CHARSET_ONLY_LETTERS_AND_DIGITS);
+    private static final Pattern PATTERN_ILLEGAL_FS = Pattern.compile(CHARSET_ILLEGAL_FS);
 
-    /**
-     * #143 #44 #42 #22: make sure that the filename does not contain illegal chars.
-     *
-     * @param context the context to retrieve strings and preferences from
-     * @param title   the title to create a filename from
-     * @return the filename
-     */
+    private FilenameUtils() {
+    }
+
     public static String createFilename(final Context context, final String title) {
+        Pattern pattern = getCharsetPattern(context);
+        return title.replaceAll(pattern.pattern(), "_");
+    }
+
+    public static String sanitizeWithPreference(final Context context, final String s) {
+        if (s == null) return "";
+        return createFilename(context, s.trim());
+    }
+
+    public static String buildFilename(Context context, String template,
+                                       org.schabi.newpipe.extractor.stream.StreamInfo info) {
+        String date = "";
+        if (info.getUploadDate() != null) {
+            java.util.Calendar cal = info.getUploadDate().date();
+            date = String.format(java.util.Locale.ROOT, "%04d-%02d-%02d",
+                    cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1,
+                    cal.get(java.util.Calendar.DAY_OF_MONTH));
+        }
+        String dateShort = date.replace("-", "");
+        if (dateShort.length() > 6) {
+            dateShort = dateShort.substring(0, 6);
+        }
+
+        Pattern p = getCharsetPattern(context);
+        String name = template
+                .replace("{title}", sanitizeWithPattern(info.getName(), p))
+                .replace("{channel}", sanitizeWithPattern(nvl(info.getUploaderName()), p))
+                .replace("{date}", date)
+                .replace("{date_short}", dateShort)
+                .replace("{id}", sanitizeWithPattern(normalizeId(info.getId()), p));
+
+        name = name.trim();
+        if (name.isEmpty())
+            name = sanitizeWithPattern(info.getName(), p);
+        return name;
+    }
+
+    public static String buildFilename(String template,
+                                       org.schabi.newpipe.extractor.stream.StreamInfo info) {
+        String date = "";
+        if (info.getUploadDate() != null) {
+            java.util.Calendar cal = info.getUploadDate().date();
+            date = String.format(java.util.Locale.ROOT, "%04d-%02d-%02d",
+                    cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1,
+                    cal.get(java.util.Calendar.DAY_OF_MONTH));
+        }
+        String dateShort = date.replace("-", "");
+        if (dateShort.length() > 6) {
+            dateShort = dateShort.substring(0, 6);
+        }
+
+        String name = template
+                .replace("{title}", sanitize(info.getName()))
+                .replace("{channel}", sanitize(nvl(info.getUploaderName())))
+                .replace("{date}", date)
+                .replace("{date_short}", dateShort)
+                .replace("{id}", sanitize(normalizeId(info.getId())));
+
+        name = name.trim();
+        if (name.isEmpty())
+            name = sanitize(info.getName());
+        return name;
+    }
+
+    private static String normalizeId(final String id) {
+        if (id == null)
+            return "";
+        String result = id;
+        final int hashIdx = result.indexOf('#');
+        if (hashIdx >= 0) {
+            result = result.substring(0, hashIdx);
+        }
+        if (result.endsWith("?p=1")) {
+            result = result.substring(0, result.length() - "?p=1".length());
+        }
+        return result;
+    }
+
+    private static String sanitize(String s) {
+        if (s == null)
+            return "";
+        return PATTERN_ILLEGAL_FS.matcher(s).replaceAll("_").trim();
+    }
+
+    private static String sanitizeWithPattern(String s, Pattern p) {
+        if (s == null)
+            return "";
+        return p.matcher(s).replaceAll("_").trim();
+    }
+
+    private static Pattern getCharsetPattern(Context context) {
         final SharedPreferences sharedPreferences = PreferenceManager
                 .getDefaultSharedPreferences(context);
 
@@ -30,39 +120,27 @@ public final class FilenameUtils {
         final String charsetMs = context.getString(R.string.charset_most_special_value);
         final String defaultCharset = context.getString(R.string.default_file_charset_value);
 
-        final String replacementChar = "_";
         String selectedCharset = sharedPreferences.getString(
                 context.getString(R.string.settings_file_charset_key), null);
-
-        final String charset;
 
         if (selectedCharset == null || selectedCharset.isEmpty()) {
             selectedCharset = defaultCharset;
         }
 
         if (selectedCharset.equals(charsetLd)) {
-            charset = CHARSET_ONLY_LETTERS_AND_DIGITS;
+            return PATTERN_LETTERS_DIGITS;
         } else if (selectedCharset.equals(charsetMs)) {
-            charset = CHARSET_MOST_SPECIAL;
+            return PATTERN_MOST_SPECIAL;
         } else {
-            charset = selectedCharset; // Is the user using a custom charset?
+            try {
+                return Pattern.compile(selectedCharset);
+            } catch (final Exception ignored) {
+                return PATTERN_MOST_SPECIAL;
+            }
         }
-
-        final Pattern pattern = Pattern.compile(charset);
-
-        return createFilename(title, pattern, replacementChar);
     }
 
-    /**
-     * Create a valid filename.
-     *
-     * @param title             the title to create a filename from
-     * @param invalidCharacters patter matching invalid characters
-     * @param replacementChar   the replacement
-     * @return the filename
-     */
-    private static String createFilename(final String title, final Pattern invalidCharacters,
-                                         final String replacementChar) {
-        return title.replaceAll(invalidCharacters.pattern(), replacementChar);
+    private static String nvl(String s) {
+        return s == null ? "" : s;
     }
 }
