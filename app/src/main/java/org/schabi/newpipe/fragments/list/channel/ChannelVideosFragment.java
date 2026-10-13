@@ -105,6 +105,9 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     private PlaylistControlBinding playlistControlBinding;
     private ImageButton addToGroupButton;
 
+
+
+
     public static ChannelVideosFragment getInstance(@NonNull final ChannelInfo channelInfo) {
         final ChannelVideosFragment instance = new ChannelVideosFragment();
         instance.setInitialData(channelInfo.getServiceId(), channelInfo.getUrl(),
@@ -152,31 +155,7 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     @Override
     public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setHasOptionsMenu(true);
-    }
-
-    @Override
-    public void onCreateOptionsMenu(@NonNull final Menu menu,
-                                    @NonNull final MenuInflater inflater) {
-        super.onCreateOptionsMenu(menu, inflater);
-        inflater.inflate(R.menu.menu_channel_videos, menu);
-        menuSortButton = menu.findItem(R.id.menu_item_sort);
-        updateSortButton();
-    }
-
-    @Override
-    public void onPrepareOptionsMenu(@NonNull final Menu menu) {
-        super.onPrepareOptionsMenu(menu);
-        updateSortButton();
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(@NonNull final MenuItem item) {
-        if (item.getItemId() == R.id.menu_item_sort) {
-            showSortDialog();
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
+        setHasOptionsMenu(true); // contributes menu_channel_videos items alongside ChannelFragment's menu
     }
 
     @Override
@@ -593,6 +572,38 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
     }
 
     /*//////////////////////////////////////////////////////////////////////////
+    // Menu
+    //////////////////////////////////////////////////////////////////////////*/
+
+    @Override
+    public void onCreateOptionsMenu(@NonNull final Menu menu,
+                                    @NonNull final MenuInflater inflater) {
+        super.onCreateOptionsMenu(menu, inflater);
+        inflater.inflate(R.menu.menu_channel_videos, menu);
+        menuSortButton = menu.findItem(R.id.menu_item_sort);
+        setupMultiSelectMenu(menu);
+    }
+
+    @Override
+    public void onPrepareOptionsMenu(@NonNull final Menu menu) {
+        super.onPrepareOptionsMenu(menu);
+        updateSortButton();
+        prepareMultiSelectMenu(menu);
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(@NonNull final MenuItem item) {
+        if (item.getItemId() == R.id.menu_item_sort) {
+            showSortDialog();
+            return true;
+        }
+        if (handleMultiSelectMenuSelection(item)) {
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
     // OnClick
     //////////////////////////////////////////////////////////////////////////*/
 
@@ -706,6 +717,9 @@ public class ChannelVideosFragment extends BaseListInfoFragment<StreamInfoItem, 
             NavigationHelper.enqueueOnPlayer(activity, getPlayQueue(), PlayerType.AUDIO);
             return true;
         });
+
+        // Reveal the "Select videos" toolbar button now that items are loaded.
+        activity.invalidateOptionsMenu();
     }
 
     private void showContentNotSupportedIfNeeded() {

@@ -92,6 +92,8 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
     private long streamCount;
     private long playlistOverallDurationSeconds;
 
+
+
     public static PlaylistFragment getInstance(final int serviceId, final String url,
                                                final String name) {
         final PlaylistFragment instance = new PlaylistFragment();
@@ -142,6 +144,8 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
         infoListAdapter.setUseMiniVariant(true);
     }
 
+
+
     private PlayQueue getPlayQueueStartingAt(final StreamInfoItem infoItem) {
         return getPlayQueue(Math.max(infoListAdapter.getItemsList().indexOf(infoItem), 0));
     }
@@ -174,9 +178,20 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
         }
         super.onCreateOptionsMenu(menu, inflater);
         inflater.inflate(R.menu.menu_playlist, menu);
-
+ 
         playlistBookmarkButton = menu.findItem(R.id.menu_item_bookmark);
+        setupMultiSelectMenu(menu);
+ 
         updateBookmarkButtons();
+    }
+ 
+    @Override
+    public void onPrepareOptionsMenu(@NonNull final Menu menu) {
+        super.onPrepareOptionsMenu(menu);
+        prepareMultiSelectMenu(menu);
+        if (playlistBookmarkButton != null) {
+            playlistBookmarkButton.setVisible(!isMultiSelectMode);
+        }
     }
 
     @Override
@@ -226,22 +241,23 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
     protected Single<PlaylistInfo> loadResult(final boolean forceLoad) {
         return ExtractorHelper.getPlaylistInfoWithFullItems(serviceId, url, forceLoad);
     }
-
     @Override
     public boolean onOptionsItemSelected(final MenuItem item) {
-        if (item.getItemId() == R.id.action_settings) {
+        int itemId = item.getItemId();
+        if (itemId == R.id.action_settings) {
             NavigationHelper.openSettings(requireContext());
-        } else if (item.getItemId() == R.id.menu_item_openInBrowser) {
+        } else if (itemId == R.id.menu_item_openInBrowser) {
             ShareUtils.openUrlInBrowser(requireContext(), url);
-        } else if (item.getItemId() == R.id.menu_item_share) {
+        } else if (itemId == R.id.menu_item_share) {
             if (currentInfo != null) {
                 ShareUtils.shareText(requireContext(), name, url,
                         currentInfo.getThumbnailUrl());
             }
-        } else if (item.getItemId() == R.id.menu_item_bookmark) {
+        } else if (itemId == R.id.menu_item_bookmark) {
             onBookmarkClicked();
-        } else if (item.getItemId() == R.id.menu_item_append_playlist) {
-            if(isInfinitePlayList) {
+        } else if (itemId == R.id.menu_item_append_playlist) {
+            if (isInfinitePlayList) {
+                // Popup a dialog to tell user explicitly that infinite playlist cannot be appended
                 new AlertDialog.Builder(requireContext())
                         .setTitle(R.string.add_failed)
                         .setMessage(R.string.append_playlist_not_supported)
@@ -258,6 +274,11 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
                             .collect(Collectors.toList()),
                     dialog -> dialog.show(getFM(), TAG)
             ));
+        } else if (itemId == R.id.menu_item_select_videos ||
+                   itemId == R.id.menu_item_select_all ||
+                   itemId == R.id.menu_item_download_selected ||
+                   itemId == R.id.menu_item_cancel_select) {
+            return handleMultiSelectMenuSelection(item);
         } else {
             return super.onOptionsItemSelected(item);
         }
@@ -370,6 +391,9 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
             NavigationHelper.enqueueOnPlayer(activity, getPlayQueue(), PlayerType.AUDIO);
             return true;
         });
+
+        // Reveal "Select videos" toolbar button once items are loaded.
+        activity.invalidateOptionsMenu();
     }
 
     private PlayQueue getPlayQueue() {
