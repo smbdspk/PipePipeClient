@@ -65,6 +65,7 @@ import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.FinishedMission;
 import us.shandian.giga.get.Mission;
 import us.shandian.giga.get.MissionRecoveryInfo;
+import us.shandian.giga.get.PendingFetchMission;
 import us.shandian.giga.get.SabrDownloadException;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
 import us.shandian.giga.service.DownloadManager;
@@ -121,6 +122,9 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
     private MenuItem mClear;
     private MenuItem mStartButton;
     private MenuItem mPauseButton;
+    private MenuItem mRetryButton;
+    private MenuItem mDeleteErrored;
+    private MenuItem mDeleteFetches;
     private final View mEmptyMessage;
     private RecoverHelper mRecover;
     private final View mView;
@@ -215,12 +219,25 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
         h.progress.setColors(Utility.getBackgroundForFileType(mContext, type), Utility.getForegroundForFileType(mContext, type));
 
+        if (item.mission instanceof PendingFetchMission
+                && ((PendingFetchMission) item.mission).pendingFetch) {
+            h.progress.setColors(ContextCompat.getColor(mContext, R.color.placeholder_background),
+                    ContextCompat.getColor(mContext, R.color.placeholder_foreground));
+        }
+
         if (h.item.mission instanceof DownloadMission) {
             DownloadMission mission = (DownloadMission) item.mission;
             String length = Utility.formatBytes(mission.getLength());
             if (mission.running && !mission.isPsRunning()) length += " --.- kB/s";
 
-            h.size.setText(length);
+            if (mission instanceof PendingFetchMission && ((PendingFetchMission) mission).pendingFetch) {
+                h.size.setText(length);
+                h.status.setText(R.string.bulk_download_fetching);
+                h.progress.setMarquee(true);
+                h.date.setText("");
+            } else {
+                h.size.setText(length);
+            }
             h.pause.setTitle(mission.unknownLength ? R.string.stop : R.string.pause);
             updateProgress(h);
             mPendingDownloadsItems.add(h);
@@ -253,6 +270,15 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         if (h == null || h.item == null || h.item.mission instanceof FinishedMission) return;
 
         DownloadMission mission = (DownloadMission) h.item.mission;
+
+        if (mission instanceof PendingFetchMission && ((PendingFetchMission) mission).pendingFetch) {
+            String length = Utility.formatBytes(mission.getLength());
+            h.size.setText(length);
+            h.status.setText(R.string.bulk_download_fetching);
+            h.progress.setMarquee(true);
+            return;
+        }
+
         double done = mission.done;
         long length = mission.getLength();
         long now = System.currentTimeMillis();
@@ -555,6 +581,12 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                     msgEx = mission.errObject.getMessage();
                 }
                 break;
+            case PendingFetchMission.ERROR_FETCH_FAILED:
+                msg = R.string.bulk_download_fetch_error;
+                break;
+            case PendingFetchMission.ERROR_NO_STORAGE:
+                msg = R.string.bulk_download_no_folder;
+                break;
             default:
                 if (mission.errCode >= 100 && mission.errCode < 600) {
                     msgEx = "HTTP " + mission.errCode;
@@ -569,10 +601,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
         AlertDialog.Builder builder = new AlertDialog.Builder(mContext);
 
-        if (msgEx != null)
+        if (msgEx != null) {
             builder.setMessage(msgEx);
-        else
+        } else if (mission.errObject != null && mission.errObject.getMessage() != null && !mission.errObject.getMessage().isEmpty()) {
+            builder.setMessage(mContext.getString(msg) + "\n\n" + mission.errObject.getMessage());
+        } else {
             builder.setMessage(msg);
+        }
 
         // add report button for non-HTTP errors (range 100-599)
         if (mission.errObject != null && (mission.errCode < 100 || mission.errCode >= 600)) {
@@ -711,6 +746,14 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
             } else if (id == R.id.retry) {
                 if (mission.isPsRunning()) {
                     mission.psContinue(true);
+                } else if (mission instanceof PendingFetchMission) {
+                    ((PendingFetchMission) mission).refetch();
+                    h.status.setText(UNDEFINED_PROGRESS);
+                    h.progress.setMarquee(true);
+                } else if (mission.source != null && !mission.source.isEmpty()
+                        && mission.isPsFailed()) {
+                    mDownloadManager.convertToPendingFetchMission(mission);
+                    applyChanges();
                 } else {
                     mDownloadManager.tryRecover(mission);
                     if (mission.storage.isInvalid())
@@ -775,11 +818,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
     public void applyChanges() {
         mIterator.start();
-        DiffUtil.calculateDiff(mIterator, true).dispatchUpdatesTo(this);
+        DiffUtil.calculateDiff(mIterator, false).dispatchUpdatesTo(this);
         mIterator.end();
 
         checkEmptyMessageVisibility();
         if (mClear != null) mClear.setVisible(mIterator.hasFinishedMissions());
+        if (mDeleteErrored != null) mDeleteErrored.setVisible(mIterator.hasErrorMissions());
+        if (mDeleteFetches != null) mDeleteFetches.setVisible(mIterator.hasPendingFetchMissions());
     }
 
     public void forceUpdate() {
@@ -804,13 +849,28 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         mClear = clearButton;
     }
 
-    public void setMasterButtons(MenuItem startButton, MenuItem pauseButton) {
-        boolean init = mStartButton == null || mPauseButton == null;
+    public void setMasterButtons(MenuItem startButton, MenuItem pauseButton, MenuItem retryButton) {
+        boolean init = mStartButton == null || mPauseButton == null || mRetryButton == null;
 
         mStartButton = startButton;
         mPauseButton = pauseButton;
+        mRetryButton = retryButton;
 
         if (init) checkMasterButtonsVisibility();
+    }
+
+    public void setUtilityButtons(MenuItem deleteErrored, MenuItem deleteFetches) {
+        boolean init = mDeleteErrored == null || mDeleteFetches == null;
+
+        if (mDeleteErrored == null && deleteErrored != null) {
+            deleteErrored.setVisible(mIterator.hasErrorMissions());
+        }
+        if (mDeleteFetches == null && deleteFetches != null) {
+            deleteFetches.setVisible(mIterator.hasPendingFetchMissions());
+        }
+
+        mDeleteErrored = deleteErrored;
+        mDeleteFetches = deleteFetches;
     }
 
     private void checkEmptyMessageVisibility() {
@@ -823,6 +883,7 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         Log.d(TAG, "checkMasterButtonsVisibility() running=" + state[0] + " paused=" + state[1]);
         setButtonVisible(mPauseButton, state[0]);
         setButtonVisible(mStartButton, state[1]);
+        setButtonVisible(mRetryButton, mIterator.hasErrorMissions());
     }
 
     private static void setButtonVisible(MenuItem button, boolean visible) {
@@ -979,6 +1040,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                     retry.setVisible(true);
                     delete.setVisible(true);
                     showError.setVisible(true);
+                } else if (mission instanceof PendingFetchMission
+                        && ((PendingFetchMission) mission).pendingFetch) {
+                    retry.setVisible(true);
+                    delete.setVisible(true);
+                    if (mission.errCode != ERROR_NOTHING) {
+                        showError.setVisible(true);
+                    }
                 } else if (mission.isPsRunning()) {
                     switch (mission.errCode) {
                         case ERROR_INSUFFICIENT_STORAGE:
@@ -994,6 +1062,7 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                     } else {
                         if (mission.errCode != ERROR_NOTHING) {
                             showError.setVisible(true);
+                            retry.setVisible(true);
                         }
 
                         queue.setChecked(mission.enqueued);

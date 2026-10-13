@@ -21,6 +21,7 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Handler.Callback;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Message;
 import android.os.Parcelable;
@@ -44,11 +45,13 @@ import org.schabi.newpipe.player.helper.LockManager;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.HlsDownloadStreamHelper;
 import us.shandian.giga.get.MissionRecoveryInfo;
+import us.shandian.giga.get.PendingFetchMission;
 import us.shandian.giga.get.SabrDownloadStreamHelper;
 import org.schabi.newpipe.streams.io.StoredDirectoryHelper;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
@@ -89,6 +92,18 @@ public class DownloadManagerService extends Service {
     private static final String EXTRA_RESOURCE_MANIFEST_URLS = "DownloadManagerService.extra.resourceManifestUrls";
     private static final String EXTRA_RESOURCE_IS_URLS = "DownloadManagerService.extra.resourceIsUrls";
 
+    private static final String ACTION_ADD_PENDING_FETCH = APPLICATION_ID + ".add_pending_fetch";
+    private static final String ACTION_ADD_PENDING_FETCH_BATCH = APPLICATION_ID + ".add_pending_fetch_batch";
+    private static final String EXTRA_SERVICE_ID = "DownloadManagerService.extra.serviceId";
+    private static final String EXTRA_SERVICE_IDS = "DownloadManagerService.extra.serviceIds";
+    private static final String EXTRA_SOURCE_URL = "DownloadManagerService.extra.sourceUrl";
+    private static final String EXTRA_SOURCE_URLS = "DownloadManagerService.extra.sourceUrls";
+    private static final String EXTRA_SOURCE_NAME = "DownloadManagerService.extra.sourceName";
+    private static final String EXTRA_SOURCE_NAMES = "DownloadManagerService.extra.sourceNames";
+    private static final String EXTRA_AUDIO_ONLY = "DownloadManagerService.extra.audioOnly";
+    private static final String EXTRA_QUALITY_LABEL = "DownloadManagerService.extra.qualityLabel";
+    private static final String EXTRA_EXISTING_FILE_BEHAVIOR = "DownloadManagerService.extra.existingFileBehavior";
+
     private static final String ACTION_RESET_DOWNLOAD_FINISHED = APPLICATION_ID + ".reset_download_finished";
     private static final String ACTION_OPEN_DOWNLOADS_FINISHED = APPLICATION_ID + ".open_downloads_finished";
 
@@ -96,6 +111,8 @@ public class DownloadManagerService extends Service {
     private DownloadManager mManager;
     private Notification mNotification;
     private Handler mHandler;
+    private Handler mBgHandler;
+    private HandlerThread mBgThread;
     private boolean mForeground = false;
     private NotificationManager mNotificationManager = null;
     private boolean mDownloadNotificationEnable = true;
@@ -119,6 +136,9 @@ public class DownloadManagerService extends Service {
     private int downloadFailedNotificationID = DOWNLOADS_NOTIFICATION_ID + 1;
     private Builder downloadFailedNotification = null;
     private final SparseArray<DownloadMission> mFailedDownloads = new SparseArray<>(5);
+
+    private int skipCount = 0;
+    private Builder skipNotification = null;
 
     private Bitmap icLauncher;
     private Bitmap icDownloadDone;
@@ -145,6 +165,10 @@ public class DownloadManagerService extends Service {
 
         mBinder = new DownloadManagerBinder();
         mHandler = new Handler(this::handleMessage);
+
+        mBgThread = new HandlerThread("DMS-Background");
+        mBgThread.start();
+        mBgHandler = new Handler(mBgThread.getLooper());
 
         mPrefs = PreferenceManager.getDefaultSharedPreferences(this);
 
@@ -207,7 +231,11 @@ public class DownloadManagerService extends Service {
         String action = intent.getAction();
         if (action != null) {
             if (action.equals(Intent.ACTION_RUN)) {
-                mHandler.post(() -> startMission(intent));
+                mBgHandler.post(() -> startMission(intent));
+            } else if (action.equals(ACTION_ADD_PENDING_FETCH)) {
+                mBgHandler.post(() -> addPendingFetchMission(intent));
+            } else if (action.equals(ACTION_ADD_PENDING_FETCH_BATCH)) {
+                mBgHandler.post(() -> addPendingFetchMissionsBatch(intent));
             } else if (downloadDoneNotification != null) {
                 if (action.equals(ACTION_RESET_DOWNLOAD_FINISHED) || action.equals(ACTION_OPEN_DOWNLOADS_FINISHED)) {
                     downloadDoneCount = 0;
@@ -252,60 +280,91 @@ public class DownloadManagerService extends Service {
         if (icLauncher != null) icLauncher.recycle();
 
         mHandler = null;
+        if (mBgThread != null) {
+            mBgThread.quitSafely();
+            mBgThread = null;
+            mBgHandler = null;
+        }
         mManager.pauseAllMissions(true);
     }
 
     @Override
     public IBinder onBind(Intent intent) {
-        /*
-        int permissionCheck;
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN) {
-            permissionCheck = PermissionChecker.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE);
-            if (permissionCheck == PermissionChecker.PERMISSION_DENIED) {
-                Toast.makeText(this, "Permission denied (read)", Toast.LENGTH_SHORT).show();
-            }
-        }
-
-        permissionCheck = PermissionChecker.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        if (permissionCheck == PermissionChecker.PERMISSION_DENIED) {
-            Toast.makeText(this, "Permission denied (write)", Toast.LENGTH_SHORT).show();
-        }
-        */
-
         return mBinder;
     }
 
     private boolean handleMessage(@NonNull Message msg) {
         if (mHandler == null) return true;
 
+        if (msg.what == DownloadManager.MESSAGE_SKIPPED) {
+            notifySkippedDownload((String) msg.obj);
+            for (Callback observer : mEchoObservers)
+                observer.handleMessage(msg);
+            return true;
+        }
+
         DownloadMission mission = (DownloadMission) msg.obj;
+        boolean deferred = false;
 
         switch (msg.what) {
             case MESSAGE_FINISHED:
-                notifyMediaScanner(mission.storage.getUri());
-                notifyFinishedDownload(mission.storage.getName());
-                mManager.setFinished(mission);
-                handleConnectivityState(false);
-                updateForegroundState(mManager.runMissions());
+                if (mission.storage != null) {
+                    notifyMediaScanner(mission.storage.getUri());
+                    notifyFinishedDownload(mission.storage.getName());
+                }
+                deferred = true;
                 break;
             case MESSAGE_RUNNING:
                 updateForegroundState(true);
+                mBgHandler.post(() -> mManager.runMissions());
                 break;
             case MESSAGE_ERROR:
                 notifyFailedDownload(mission);
-                handleConnectivityState(false);
-                updateForegroundState(mManager.runMissions());
+                deferred = true;
                 break;
             case MESSAGE_PAUSED:
-                updateForegroundState(mManager.getRunningMissionsCount() > 0);
+                mBgHandler.post(() -> {
+                    final boolean running = mManager.getRunningMissionsCount() > 0;
+                    if (mHandler != null) {
+                        mHandler.post(() -> updateForegroundState(running));
+                    }
+                });
+                break;
+            case MESSAGE_DELETED:
+                removeFailedDownload(mission);
                 break;
         }
 
-        if (msg.what != MESSAGE_ERROR)
-            mFailedDownloads.delete(mFailedDownloads.indexOfValue(mission));
-
-        for (Callback observer : mEchoObservers)
-            observer.handleMessage(msg);
+        if (deferred) {
+            final int what = msg.what;
+            mBgHandler.post(() -> {
+                if (what == MESSAGE_FINISHED) {
+                    mManager.setFinished(mission);
+                }
+                handleConnectivityState(false);
+                final boolean running = mManager.runMissions();
+                if (mHandler != null) {
+                    mHandler.post(() -> {
+                        updateForegroundState(running);
+                        if (what != MESSAGE_ERROR) {
+                            mFailedDownloads.delete(mFailedDownloads.indexOfValue(mission));
+                        }
+                        Message m = mHandler.obtainMessage(what, mission);
+                        for (Callback observer : mEchoObservers) {
+                            observer.handleMessage(m);
+                        }
+                        m.recycle();
+                    });
+                }
+            });
+        } else {
+            if (msg.what != MESSAGE_ERROR) {
+                mFailedDownloads.delete(mFailedDownloads.indexOfValue(mission));
+            }
+            for (Callback observer : mEchoObservers) {
+                observer.handleMessage(msg);
+            }
+        }
 
         return true;
     }
@@ -426,7 +485,8 @@ public class DownloadManagerService extends Service {
         try {
             storage = new StoredFileHelper(this, parentPath, path, tag);
         } catch (IOException e) {
-            throw new RuntimeException(e);// this never should happen
+            Log.e(TAG, "Failed to create StoredFileHelper for download", e);
+            return;
         }
 
         Postprocessing ps;
@@ -459,7 +519,7 @@ public class DownloadManagerService extends Service {
         if (ps != null)
             ps.setTemporalDir(DownloadManager.pickAvailableTemporalDir(this));
 
-        handleConnectivityState(true);// first check the actual network status
+        handleConnectivityState(true);
 
         mManager.startMission(mission);
     }
@@ -486,6 +546,109 @@ public class DownloadManagerService extends Service {
             values[i] = true;
         }
         return values;
+    }
+
+    private void addPendingFetchMission(Intent intent) {
+        int serviceId = intent.getIntExtra(EXTRA_SERVICE_ID, 0);
+        String sourceUrl = intent.getStringExtra(EXTRA_SOURCE_URL);
+        String sourceName = intent.getStringExtra(EXTRA_SOURCE_NAME);
+        boolean audioOnly = intent.getBooleanExtra(EXTRA_AUDIO_ONLY, false);
+        String qualityLabel = intent.getStringExtra(EXTRA_QUALITY_LABEL);
+        int existingFileBehavior = intent.getIntExtra(EXTRA_EXISTING_FILE_BEHAVIOR,
+                PendingFetchMission.BEHAVIOR_SKIP);
+
+        if (sourceUrl == null || sourceName == null) {
+            Log.e(TAG, "addPendingFetchMission: missing required extras (sourceUrl or sourceName)");
+            return;
+        }
+
+        String tag = audioOnly ? DownloadManager.TAG_AUDIO : DownloadManager.TAG_VIDEO;
+        StoredFileHelper placeholderStorage = new StoredFileHelper(null,
+                sourceName, StoredFileHelper.DEFAULT_MIME, tag);
+
+        PendingFetchMission mission = new PendingFetchMission(
+                serviceId, sourceUrl, sourceName, audioOnly, qualityLabel,
+                existingFileBehavior, placeholderStorage);
+
+        mission.context = getApplicationContext();
+
+        handleConnectivityState(true);
+
+        mManager.addPendingFetchMission(mission);
+    }
+
+    private void addPendingFetchMissionsBatch(Intent intent) {
+        int[] serviceIds = intent.getIntArrayExtra(EXTRA_SERVICE_IDS);
+        ArrayList<String> sourceUrls = intent.getStringArrayListExtra(EXTRA_SOURCE_URLS);
+        ArrayList<String> sourceNames = intent.getStringArrayListExtra(EXTRA_SOURCE_NAMES);
+        boolean audioOnly = intent.getBooleanExtra(EXTRA_AUDIO_ONLY, false);
+        String qualityLabel = intent.getStringExtra(EXTRA_QUALITY_LABEL);
+        int existingFileBehavior = intent.getIntExtra(EXTRA_EXISTING_FILE_BEHAVIOR,
+                PendingFetchMission.BEHAVIOR_SKIP);
+
+        if (serviceIds == null || sourceUrls == null || sourceNames == null
+                || serviceIds.length != sourceUrls.size() || serviceIds.length != sourceNames.size()) {
+            Log.e(TAG, "addPendingFetchMissionsBatch: missing or mismatched extras");
+            return;
+        }
+
+        String tag = audioOnly ? DownloadManager.TAG_AUDIO : DownloadManager.TAG_VIDEO;
+        Context appCtx = getApplicationContext();
+        List<PendingFetchMission> missions = new ArrayList<>(serviceIds.length);
+
+        for (int i = 0; i < serviceIds.length; i++) {
+            String sourceUrl = sourceUrls.get(i);
+            String sourceName = sourceNames.get(i);
+            if (sourceUrl == null || sourceName == null) continue;
+
+            StoredFileHelper placeholderStorage = new StoredFileHelper(null,
+                    sourceName, StoredFileHelper.DEFAULT_MIME, tag);
+
+            PendingFetchMission mission = new PendingFetchMission(
+                    serviceIds[i], sourceUrl, sourceName, audioOnly, qualityLabel,
+                    existingFileBehavior, placeholderStorage);
+
+            mission.context = appCtx;
+            missions.add(mission);
+        }
+
+        if (missions.isEmpty()) return;
+
+        handleConnectivityState(true);
+        mManager.addPendingFetchMissions(missions);
+    }
+
+    public static void addPendingFetchMission(Context context, int serviceId,
+                                                String url, String name,
+                                                boolean audioOnly, String qualityLabel,
+                                                int existingFileBehavior) {
+        Intent intent = new Intent(context, DownloadManagerService.class);
+        intent.setAction(ACTION_ADD_PENDING_FETCH);
+        intent.putExtra(EXTRA_SERVICE_ID, serviceId);
+        intent.putExtra(EXTRA_SOURCE_URL, url);
+        intent.putExtra(EXTRA_SOURCE_NAME, name);
+        intent.putExtra(EXTRA_AUDIO_ONLY, audioOnly);
+        intent.putExtra(EXTRA_QUALITY_LABEL, qualityLabel);
+        intent.putExtra(EXTRA_EXISTING_FILE_BEHAVIOR, existingFileBehavior);
+        context.startService(intent);
+    }
+
+    public static void addPendingFetchMissions(Context context,
+                                               int[] serviceIds,
+                                               ArrayList<String> urls,
+                                               ArrayList<String> names,
+                                               boolean audioOnly,
+                                               String qualityLabel,
+                                               int existingFileBehavior) {
+        Intent intent = new Intent(context, DownloadManagerService.class);
+        intent.setAction(ACTION_ADD_PENDING_FETCH_BATCH);
+        intent.putExtra(EXTRA_SERVICE_IDS, serviceIds);
+        intent.putStringArrayListExtra(EXTRA_SOURCE_URLS, urls);
+        intent.putStringArrayListExtra(EXTRA_SOURCE_NAMES, names);
+        intent.putExtra(EXTRA_AUDIO_ONLY, audioOnly);
+        intent.putExtra(EXTRA_QUALITY_LABEL, qualityLabel);
+        intent.putExtra(EXTRA_EXISTING_FILE_BEHAVIOR, existingFileBehavior);
+        context.startService(intent);
     }
 
     public void notifyFinishedDownload(String name) {
@@ -544,12 +707,38 @@ public class DownloadManagerService extends Service {
                     .setContentIntent(mOpenDownloadList);
         }
 
+        final String name = mission.storage != null
+                ? mission.storage.getName() : getString(R.string.download_failed);
         downloadFailedNotification.setContentTitle(getString(R.string.download_failed));
-        downloadFailedNotification.setContentText(mission.storage.getName());
+        downloadFailedNotification.setContentText(name);
         downloadFailedNotification.setStyle(new NotificationCompat.BigTextStyle()
-                .bigText(mission.storage.getName()));
+                .bigText(name));
 
         mNotificationManager.notify(id, downloadFailedNotification.build());
+    }
+
+    private void removeFailedDownload(DownloadMission mission) {
+        int idx = mFailedDownloads.indexOfValue(mission);
+        if (idx >= 0) {
+            mNotificationManager.cancel(mFailedDownloads.keyAt(idx));
+            mFailedDownloads.removeAt(idx);
+        }
+    }
+
+    private void notifySkippedDownload(String name) {
+        if (!mDownloadNotificationEnable || mNotificationManager == null) return;
+
+        skipCount++;
+        if (skipNotification == null) {
+            skipNotification = new Builder(this, getString(R.string.notification_channel_id))
+                    .setAutoCancel(true)
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentIntent(mOpenDownloadList);
+        }
+
+        skipNotification.setContentTitle(getString(R.string.bulk_download_skipped, skipCount));
+        skipNotification.setContentText(name);
+        mNotificationManager.notify(DOWNLOADS_NOTIFICATION_ID + 2, skipNotification.build());
     }
 
     private PendingIntent makePendingIntent(String action) {

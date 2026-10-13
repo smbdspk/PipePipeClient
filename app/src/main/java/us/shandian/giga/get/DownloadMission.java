@@ -141,10 +141,12 @@ public class DownloadMission extends Mission {
     public boolean sabrStarted;
 
     private transient int finishCount;
-    public transient volatile boolean running;
-    public boolean enqueued;
+    transient volatile boolean recoveryTriggered;
 
-    public int errCode = ERROR_NOTHING;
+    public transient volatile boolean running;
+    public volatile boolean enqueued;
+
+    public volatile int errCode = ERROR_NOTHING;
     public Exception errObject = null;
 
     public transient Handler mHandler;
@@ -294,7 +296,9 @@ public class DownloadMission extends Mission {
 
 
     private void notify(int what) {
-        mHandler.obtainMessage(what, this).sendToTarget();
+        if (mHandler != null) {
+            mHandler.obtainMessage(what, this).sendToTarget();
+        }
     }
 
     synchronized void notifyProgress(long deltaLen) {
@@ -349,15 +353,17 @@ public class DownloadMission extends Mission {
         }
 
         if (err instanceof IOException) {
-            if (err.getMessage().contains("Permission denied")) {
-                code = ERROR_PERMISSION_DENIED;
-                err = null;
-            } else if (err.getMessage().contains("ENOSPC")) {
-                code = ERROR_INSUFFICIENT_STORAGE;
-                err = null;
-            } else if (!storage.canWrite()) {
+            String msg = err.getMessage();
+            if (msg != null) {
+                if (msg.contains("Permission denied")) {
+                    code = ERROR_PERMISSION_DENIED;
+                } else if (msg.contains("ENOSPC")) {
+                    code = ERROR_INSUFFICIENT_STORAGE;
+                } else if (storage == null || !storage.canWrite()) {
+                    code = ERROR_FILE_CREATION;
+                }
+            } else if (storage == null || !storage.canWrite()) {
                 code = ERROR_FILE_CREATION;
-                err = null;
             }
         }
 
@@ -430,7 +436,7 @@ public class DownloadMission extends Mission {
                 action = "Failed";
         }
 
-        Log.d(TAG, action + " postprocessing on " + storage.getName());
+        Log.d(TAG, action + " postprocessing on " + (storage != null ? storage.getName() : "unknown"));
 
         if (state == 2) {
             psState = state;
@@ -448,14 +454,15 @@ public class DownloadMission extends Mission {
     /**
      * Start downloading with multiple threads.
      */
-    public void start() {
+    public synchronized void start() {
         if (running || isFinished() || urls.length < 1) return;
 
         // ensure that the previous state is completely paused.
-        joinForThreads(10000);
+        joinForThreads(500);
 
         running = true;
         errCode = ERROR_NOTHING;
+        recoveryTriggered = false;
 
         if (hasInvalidStorage()) {
             notifyError(ERROR_FILE_CREATION, null);
@@ -673,9 +680,16 @@ public class DownloadMission extends Mission {
     public long getLength() {
         long calculated;
         if (psState == 1 || psState == 3) {
-            if(psAlgorithm != null && psAlgorithm.name == NICONICO_MUXER) {
-                long result = (long) Math.ceil(Long.parseLong(URLDecoder.decode(urls[0].split("&length=")[1]))/6.0);
-                return result * (kind == 'v'? 2 :1);
+            if (psAlgorithm != null && psAlgorithm.name != null
+                    && psAlgorithm.name.equals(NICONICO_MUXER)) {
+                try {
+                    String[] parts = urls[0].split("&length=");
+                    if (parts.length > 1) {
+                        long result = (long) Math.ceil(
+                                Long.parseLong(URLDecoder.decode(parts[1])) / 6.0);
+                        return result * (kind == 'v' ? 2 : 1);
+                    }
+                } catch (final Exception ignored) { }
             }
             return length;
         }
@@ -748,6 +762,7 @@ public class DownloadMission extends Mission {
         }
 
         Exception exception = null;
+        boolean staleUrl = false;
 
         try {
             psAlgorithm.run(this);
@@ -759,11 +774,22 @@ public class DownloadMission extends Mission {
                 return;
             }
 
-            if (errCode == ERROR_NOTHING) errCode = ERROR_POSTPROCESSING;
-
-            exception = err;
+            if (err instanceof IOException && err.getMessage() != null
+                    && err.getMessage().contains("The chunk is empty or invalid")
+                    && this instanceof PendingFetchMission) {
+                staleUrl = true;
+            } else {
+                if (errCode == ERROR_NOTHING) errCode = ERROR_POSTPROCESSING;
+                exception = err;
+            }
         } finally {
             notifyPostProcessing(errCode == ERROR_NOTHING ? 2 : 0);
+        }
+
+        if (staleUrl) {
+            errCode = ERROR_NOTHING;
+            ((PendingFetchMission) this).refetch();
+            return;
         }
 
         if (errCode != ERROR_NOTHING) {
@@ -781,7 +807,7 @@ public class DownloadMission extends Mission {
      * @param errorCode error code which trigger the recovery procedure
      */
     void doRecover(int errorCode) {
-        Log.i(TAG, "Attempting to recover the mission: " + storage.getName());
+        Log.i(TAG, "Attempting to recover the mission: " + (storage != null ? storage.getName() : "unknown"));
 
         if (recoveryInfo == null) {
             notifyError(errorCode, null);

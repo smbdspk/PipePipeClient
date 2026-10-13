@@ -27,7 +27,7 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
     // TODO: use NewPipeSQLiteHelper ('s constants) when playlist branch is merged (?)
     private static final String DATABASE_NAME = "downloads.db";
 
-    private static final int DATABASE_VERSION = 4;
+    private static final int DATABASE_VERSION = 5;
 
     /**
      * The table name of download missions (old)
@@ -56,6 +56,8 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
 
     private static final String KEY_PATH = "path";
 
+    private static final String KEY_NAME = "name";
+
     /**
      * The statement to create the table
      */
@@ -66,8 +68,12 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
                     KEY_DONE + " INTEGER NOT NULL, " +
                     KEY_TIMESTAMP + " INTEGER NOT NULL, " +
                     KEY_KIND + " TEXT NOT NULL, " +
+                    KEY_NAME + " TEXT, " +
                     " UNIQUE(" + KEY_TIMESTAMP + ", " + KEY_PATH + "));";
 
+
+    private static final String MISSIONS_CREATE_INDEX_SOURCE =
+            "CREATE INDEX IF NOT EXISTS idx_finished_source ON " + FINISHED_TABLE_NAME + " (" + KEY_SOURCE + ");";
 
     private final Context context;
 
@@ -79,6 +85,7 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL(MISSIONS_CREATE_TABLE);
+        db.execSQL(MISSIONS_CREATE_INDEX_SOURCE);
     }
 
     @Override
@@ -90,7 +97,7 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
 
         if (oldVersion == 3) {
             final String KEY_LOCATION = "location";
-            final String KEY_NAME = "name";
+            final String KEY_OLD_NAME = "name";
 
             db.execSQL(MISSIONS_CREATE_TABLE);
 
@@ -109,7 +116,7 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
                     values.put(KEY_PATH, Uri.fromFile(
                             new File(
                                     cursor.getString(cursor.getColumnIndex(KEY_LOCATION)),
-                                    cursor.getString(cursor.getColumnIndex(KEY_NAME))
+                                    cursor.getString(cursor.getColumnIndex(KEY_OLD_NAME))
                             )
                     ).toString());
 
@@ -121,6 +128,12 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
 
             cursor.close();
             db.execSQL("DROP TABLE " + MISSIONS_TABLE_NAME_v2);
+            oldVersion = 4;
+        }
+
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE " + FINISHED_TABLE_NAME + " ADD COLUMN " + KEY_NAME + " TEXT;");
+            db.execSQL(MISSIONS_CREATE_INDEX_SOURCE);
         }
     }
 
@@ -137,6 +150,9 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
         values.put(KEY_DONE, downloadMission.length);
         values.put(KEY_TIMESTAMP, downloadMission.timestamp);
         values.put(KEY_KIND, String.valueOf(downloadMission.kind));
+        if (downloadMission.storage != null && downloadMission.storage.getName() != null) {
+            values.put(KEY_NAME, downloadMission.storage.getName());
+        }
         return values;
     }
 
@@ -153,8 +169,14 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
         mission.timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(KEY_TIMESTAMP));
         mission.kind = kind.charAt(0);
 
+        String name = null;
+        int nameIdx = cursor.getColumnIndex(KEY_NAME);
+        if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+            name = cursor.getString(nameIdx);
+        }
+
         try {
-            mission.storage = new StoredFileHelper(context,null, Uri.parse(path), "");
+            mission.storage = StoredFileHelper.fromExistingUri(context, Uri.parse(path), "", name);
         } catch (Exception e) {
             Log.e("FinishedMissionStore", "failed to load the storage path of: " + path, e);
             mission.storage = new StoredFileHelper(null, path, "", "");
@@ -170,18 +192,20 @@ public class FinishedMissionStore extends SQLiteOpenHelper {
 
     public ArrayList<FinishedMission> loadFinishedMissions() {
         SQLiteDatabase database = getReadableDatabase();
-        Cursor cursor = database.query(FINISHED_TABLE_NAME, null, null,
-                null, null, null, KEY_TIMESTAMP + " DESC");
+        try (Cursor cursor = database.query(FINISHED_TABLE_NAME, null, null,
+                null, null, null, KEY_TIMESTAMP + " DESC")) {
+            if (cursor == null) return new ArrayList<>(0);
 
-        int count = cursor.getCount();
-        if (count == 0) return new ArrayList<>(1);
+            int count = cursor.getCount();
+            if (count == 0) return new ArrayList<>(1);
 
-        ArrayList<FinishedMission> result = new ArrayList<>(count);
-        while (cursor.moveToNext()) {
-            result.add(getMissionFromCursor(cursor));
+            ArrayList<FinishedMission> result = new ArrayList<>(count);
+            while (cursor.moveToNext()) {
+                result.add(getMissionFromCursor(cursor));
+            }
+
+            return result;
         }
-
-        return result;
     }
 
     public void addFinishedMission(DownloadMission downloadMission) {
