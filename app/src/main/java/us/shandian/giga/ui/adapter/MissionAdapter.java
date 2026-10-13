@@ -232,8 +232,16 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
             if (mission instanceof PendingFetchMission && ((PendingFetchMission) mission).pendingFetch) {
                 h.size.setText(length);
-                h.status.setText(R.string.bulk_download_fetching);
-                h.progress.setMarquee(true);
+                if (mission.errCode != ERROR_NOTHING) {
+                    h.status.setText(R.string.bulk_download_fetch_error);
+                    h.progress.setMarquee(false);
+                } else if (mission.running) {
+                    h.status.setText(R.string.bulk_download_fetching);
+                    h.progress.setMarquee(true);
+                } else {
+                    h.status.setText(mission.enqueued ? R.string.queued : R.string.paused);
+                    h.progress.setMarquee(false);
+                }
                 h.date.setText("");
             } else {
                 h.size.setText(length);
@@ -274,8 +282,16 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         if (mission instanceof PendingFetchMission && ((PendingFetchMission) mission).pendingFetch) {
             String length = Utility.formatBytes(mission.getLength());
             h.size.setText(length);
-            h.status.setText(R.string.bulk_download_fetching);
-            h.progress.setMarquee(true);
+            if (mission.errCode != ERROR_NOTHING) {
+                h.status.setText(R.string.bulk_download_fetch_error);
+                h.progress.setMarquee(false);
+            } else if (mission.running) {
+                h.status.setText(R.string.bulk_download_fetching);
+                h.progress.setMarquee(true);
+            } else {
+                h.status.setText(mission.enqueued ? R.string.queued : R.string.paused);
+                h.progress.setMarquee(false);
+            }
             return;
         }
 

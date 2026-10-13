@@ -66,13 +66,26 @@ Filename generation is handled by `FilenameUtils.buildFilename(Context, String t
      - `UNIQUE_NAME`: Creates `filename (1).ext`.
 4. **Queueing**: `BaseListInfoFragment` exits multi-select and offloads batch enqueueing to `DownloadManagerService.addPendingFetchMissions()`.
 
-### `PendingFetchMission` Lifecycle
+### `PendingFetchMission` Lifecycle & Bulk Fetch Concurrency
 Unlike single downloads where `StreamInfo` is fetched before opening `DownloadDialog`, bulk downloads avoid resolving 50+ streams upfront:
 1. `PendingFetchMission` is created with placeholder storage holding `sourceUrl`, `sourceServiceId`, and user options.
 2. Enqueued in `DownloadManager.mMissionsPending`.
-3. `startFetch()` executes up to `maxConcurrentFetches` via `ExtractorHelper.getStreamInfo()`.
-4. Upon successful resolution, `promoteToDownload(StreamInfo)` creates real storage, assigns streams/muxers, and starts download.
+3. `startFetch()` executes up to `maxConcurrentFetches` (default 3) via `ExtractorHelper.getStreamInfo()`.
+4. Upon successful resolution, `promoteToDownload(StreamInfo)` creates real storage, assigns streams/muxers, and hands off the mission to `DownloadManager.runMissions()` to be scheduled for download according to active queue limits.
 5. If expired/stale URLs occur during postprocessing (e.g. empty chunk error), `refetch()` automatically refreshes stream URLs without losing the mission.
+
+### Bulk Fetch Scheduling & Slot Guarantees
+- **Decoupled Concurrency**: `PendingFetchMission` stream metadata resolution runs concurrently up to `maxConcurrentFetches` (1–10, default 3) independently of active byte downloads. Fetching is lightweight metadata extraction and does not consume significant disk I/O.
+- **Queue Limit Decoupling**: When the user enables "Download queue limit" (`mPrefQueueLimit = true`), active byte downloads are throttled to 1 at a time via `getRunningDownloadsCount()`. Pending fetches are not starved by this queue limit; fetches continue resolving in the background up to their slot limit while earlier downloads run.
+- **Atomic Slot Acquisition**: `activeFetchCount` uses atomic compare-and-swap (CAS) loops (`compareAndSet`) to prevent race conditions during rapid dispatch across threads.
+- **Slot Leak Prevention**: Pausing, deleting, or refetching a mission (`pause()`, `delete()`, `refetch()`) cleanly disposes in-flight RxJava subscriptions (`fetchDisposable`) and atomically decrements `activeFetchCount`.
+- **Chain Scheduling (No Queue Freezes)**: Calling `downloadManager.runMissions()` when a fetch finishes (`onFetchSuccess()`, `onFetchError()`) or when an active fetch is paused/deleted ensures that subsequent queued missions immediately claim the freed fetch slot without requiring manual user intervention ("Start downloads").
+- **Poison Pill Elimination**: When stream resolution fails, `onFetchError()` marks the mission with `running = false` and `enqueued = false` (rather than leaving `enqueued = true`). This prevents errored missions from freezing queue iteration under `mPrefQueueLimit`.
+- **UI State Distinction**: `MissionAdapter` renders distinct states for pending fetch missions:
+  - Error: `R.string.bulk_download_fetch_error` ("Fetch failed", marquee off).
+  - Fetching: `R.string.bulk_download_fetching` ("Fetching...", marquee on).
+  - Enqueued: `R.string.queued` ("Queued", marquee off).
+  - Paused: `R.string.paused` ("Paused", marquee off).
 
 ---
 
@@ -82,6 +95,7 @@ Unlike single downloads where `StreamInfo` is fetched before opening `DownloadDi
 - Monolithic `synchronized(this)` has been replaced by `ReentrantReadWriteLock` (`rwLock`, `readLock`, `writeLock`).
 - Mission collections (`mMissionsPending`, `mMissionsFinished`) use `CopyOnWriteArrayList` combined with internal indexing lookups for $O(1)$ ID queries.
 - **Rule**: Never invoke `mission.start()` or `mission.pause()` while holding locks. Collect missions inside the lock and trigger actions outside.
+- Concurrency separation: `getRunningDownloadsCount()` counts active byte downloads (excluding pending fetches), while `getRunningMissionsCount()` counts all running missions. `runMissions()` uses this distinction to schedule byte downloads according to `mPrefQueueLimit` while allowing pending fetches to proceed independently up to `maxConcurrentFetches`.
 
 ### Non-Blocking Database Initialization (ANR Elimination)
 - Loading finished missions (`FinishedMissionStore.loadFinishedMissions()`) performs database queries and SAF permission checks.

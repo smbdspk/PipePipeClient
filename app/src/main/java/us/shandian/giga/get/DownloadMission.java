@@ -295,7 +295,7 @@ public class DownloadMission extends Mission {
     }
 
 
-    private void notify(int what) {
+    void notify(int what) {
         if (mHandler != null) {
             mHandler.obtainMessage(what, this).sendToTarget();
         }

@@ -340,7 +340,7 @@ public class DownloadManager {
                     mission.errObject = new IOException("DownloadMission.storage == NULL");
                 shouldStart = false;
             } else {
-                shouldStart = canDownloadInCurrentNetwork() && (!mPrefQueueLimit || getRunningMissionsCount() < 1);
+                shouldStart = canDownloadInCurrentNetwork() && (!mPrefQueueLimit || getRunningDownloadsCount() < 1);
             }
         } finally {
             writeLock.unlock();
@@ -423,7 +423,7 @@ public class DownloadManager {
             // if no slots are available.
             boolean isPendingFetch = mission instanceof PendingFetchMission
                     && ((PendingFetchMission) mission).pendingFetch;
-            if (!isPendingFetch && getRunningMissionsCount() > 0) {
+            if (!isPendingFetch && mPrefQueueLimit && getRunningDownloadsCount() > 0) {
                 mission.setEnqueued(true);
                 return;
             }
@@ -750,6 +750,25 @@ public class DownloadManager {
         return count;
     }
 
+    int getRunningDownloadsCount() {
+        awaitInit();
+        int count = 0;
+        readLock.lock();
+        try {
+            for (DownloadMission mission : mMissionsPending) {
+                if (mission.running && !mission.isPsFailed() && !mission.isFinished()
+                        && !(mission instanceof PendingFetchMission
+                             && ((PendingFetchMission) mission).pendingFetch)) {
+                    count++;
+                }
+            }
+        } finally {
+            readLock.unlock();
+        }
+
+        return count;
+    }
+
     public void pauseAllMissions(boolean force) {
         awaitInit();
         List<DownloadMission> toPause = new ArrayList<>();
@@ -890,27 +909,33 @@ public class DownloadManager {
             if (mMissionsPending.size() < 1) return false;
             if (!canDownloadInCurrentNetwork()) return false;
 
-            if (mPrefQueueLimit) {
-                for (DownloadMission mission : mMissionsPending) {
-                    if (!mission.isFinished() && mission.running
-                            && !(mission instanceof PendingFetchMission
-                                 && ((PendingFetchMission) mission).pendingFetch)) {
-                        return true;
-                    }
+            boolean hasRunningDownload = false;
+            for (DownloadMission mission : mMissionsPending) {
+                if (!mission.isFinished() && mission.running
+                        && !(mission instanceof PendingFetchMission
+                             && ((PendingFetchMission) mission).pendingFetch)) {
+                    hasRunningDownload = true;
+                    break;
                 }
             }
 
             toStart = new ArrayList<>();
+            boolean regularDownloadAdded = false;
+
             for (DownloadMission mission : mMissionsPending) {
                 if (mission.running || !mission.enqueued || mission.isFinished())
                     continue;
+
                 if (mission instanceof PendingFetchMission
                         && ((PendingFetchMission) mission).pendingFetch) {
+                    // Pending fetch missions manage their own concurrency via activeFetchCount slots
                     toStart.add(mission);
-                    // don't break — collect all pending fetches (startFetch handles its own limit)
                 } else {
-                    toStart.add(mission);
-                    if (mPrefQueueLimit) break;
+                    // Regular downloads obey mPrefQueueLimit without cutting off pending fetches
+                    if (!mPrefQueueLimit || (!hasRunningDownload && !regularDownloadAdded)) {
+                        toStart.add(mission);
+                        regularDownloadAdded = true;
+                    }
                 }
             }
         } finally {

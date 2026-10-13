@@ -110,17 +110,11 @@ public class PendingFetchMission extends DownloadMission {
         return super.isCorrupt();
     }
 
-    public void startFetch() {
+    public synchronized void startFetch() {
         if (fetchDisposable != null && !fetchDisposable.isDisposed()) return;
 
         errCode = ERROR_NOTHING;
         errObject = null;
-
-        if (activeFetchCount.get() >= maxConcurrentFetches) {
-            enqueued = true;
-            running = false;
-            return;
-        }
 
         final StoredDirectoryHelper dir = openStorageDir();
         if (dir == null) {
@@ -135,17 +129,68 @@ public class PendingFetchMission extends DownloadMission {
             return;
         }
 
+        while (true) {
+            int current = activeFetchCount.get();
+            if (current >= maxConcurrentFetches) {
+                enqueued = true;
+                running = false;
+                return;
+            }
+            if (activeFetchCount.compareAndSet(current, current + 1)) {
+                break;
+            }
+        }
+
         running = true;
-        activeFetchCount.incrementAndGet();
 
         if (mHandler != null) {
             mHandler.obtainMessage(DownloadManagerService.MESSAGE_RUNNING, this).sendToTarget();
         }
 
-        fetchDisposable = ExtractorHelper.getStreamInfo(sourceServiceId, sourceUrl, false)
-                .subscribeOn(Schedulers.io())
-                .observeOn(Schedulers.io())
-                .subscribe(this::onFetchSuccess, this::onFetchError);
+        try {
+            fetchDisposable = ExtractorHelper.getStreamInfo(sourceServiceId, sourceUrl, false)
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(Schedulers.io())
+                    .subscribe(this::onFetchSuccess, this::onFetchError);
+        } catch (final Throwable t) {
+            onFetchError(t);
+        }
+    }
+
+    @Override
+    public synchronized void pause() {
+        if (pendingFetch) {
+            boolean wasFetching = false;
+            if (fetchDisposable != null && !fetchDisposable.isDisposed()) {
+                fetchDisposable.dispose();
+                fetchDisposable = null;
+                activeFetchCount.decrementAndGet();
+                wasFetching = true;
+            }
+            running = false;
+            enqueued = false;
+            notify(DownloadManagerService.MESSAGE_PAUSED);
+            if (wasFetching && downloadManager != null) {
+                downloadManager.runMissions();
+            }
+            return;
+        }
+        super.pause();
+    }
+
+    @Override
+    public synchronized boolean delete() {
+        if (pendingFetch) {
+            if (fetchDisposable != null && !fetchDisposable.isDisposed()) {
+                fetchDisposable.dispose();
+                fetchDisposable = null;
+                activeFetchCount.decrementAndGet();
+                if (downloadManager != null) {
+                    downloadManager.runMissions();
+                }
+            }
+        }
+        return super.delete();
     }
 
     @Override
@@ -157,10 +202,11 @@ public class PendingFetchMission extends DownloadMission {
         super.doRecover(errorCode);
     }
 
-    public void refetch() {
+    public synchronized void refetch() {
         if (fetchDisposable != null && !fetchDisposable.isDisposed()) {
             fetchDisposable.dispose();
             fetchDisposable = null;
+            activeFetchCount.decrementAndGet();
         }
 
         if (!pendingFetch) {
@@ -240,7 +286,7 @@ public class PendingFetchMission extends DownloadMission {
         running = false;
         errCode = ERROR_FETCH_FAILED;
         errObject = error instanceof Exception ? (Exception) error : new Exception(error);
-        enqueued = true;
+        enqueued = false;
         if (mHandler != null) {
             mHandler.obtainMessage(DownloadManagerService.MESSAGE_ERROR, this).sendToTarget();
         }
@@ -431,7 +477,9 @@ public class PendingFetchMission extends DownloadMission {
 
         writeThisToFile();
 
-        super.start();
+        if (downloadManager == null) {
+            super.start();
+        }
     }
 
     @NonNull
