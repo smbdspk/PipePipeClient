@@ -56,6 +56,9 @@ public class MissionsFragment extends Fragment {
     private MenuItem mClear = null;
     private MenuItem mStart = null;
     private MenuItem mPause = null;
+    private MenuItem mRetry = null;
+    private MenuItem mDeleteErrored = null;
+    private MenuItem mDeleteFetches = null;
 
     private RecyclerView mList;
     private View mEmpty;
@@ -104,8 +107,10 @@ public class MissionsFragment extends Fragment {
         mPrefs = PreferenceManager.getDefaultSharedPreferences(requireActivity());
         mLinear = mPrefs.getBoolean("linear", false);
 
-        // Bind the service
-        mContext.bindService(new Intent(mContext, DownloadManagerService.class), mConnection, Context.BIND_AUTO_CREATE);
+        // Start and bind the service so active downloads survive fragment unbind
+        Intent serviceIntent = new Intent(mContext, DownloadManagerService.class);
+        mContext.startService(serviceIntent);
+        mContext.bindService(serviceIntent, mConnection, Context.BIND_AUTO_CREATE);
 
         // Views
         mEmpty = v.findViewById(R.id.list_empty_view);
@@ -178,6 +183,9 @@ public class MissionsFragment extends Fragment {
         mClear = menu.findItem(R.id.clear_list);
         mStart = menu.findItem(R.id.start_downloads);
         mPause = menu.findItem(R.id.pause_downloads);
+        mRetry = menu.findItem(R.id.retry_downloads);
+        mDeleteErrored = menu.findItem(R.id.delete_errored);
+        mDeleteFetches = menu.findItem(R.id.delete_fetches);
 
         if (mAdapter != null) setAdapterButtons();
 
@@ -186,7 +194,7 @@ public class MissionsFragment extends Fragment {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        final int id = item.getItemId();
+        int id = item.getItemId();
         if (id == R.id.switch_mode) {
             mLinear = !mLinear;
             updateList();
@@ -199,6 +207,19 @@ public class MissionsFragment extends Fragment {
             return true;
         } else if (id == R.id.pause_downloads) {
             mBinder.getDownloadManager().pauseAllMissions(false);
+            mAdapter.refreshMissionItems();// update items view
+            mAdapter.checkMasterButtonsVisibility();
+            return true;
+        } else if (id == R.id.retry_downloads) {
+            mBinder.getDownloadManager().retryAllErrorMissions();
+            mAdapter.refreshMissionItems();
+            return true;
+        } else if (id == R.id.delete_errored) {
+            mBinder.getDownloadManager().deleteAllErroredMissions();
+            mAdapter.refreshMissionItems();
+            return true;
+        } else if (id == R.id.delete_fetches) {
+            mBinder.getDownloadManager().deleteAllFetchMissions();
             mAdapter.refreshMissionItems();
             return true;
         } else {
@@ -257,10 +278,11 @@ public class MissionsFragment extends Fragment {
     }
 
     private void setAdapterButtons() {
-        if (mClear == null || mStart == null || mPause == null) return;
+        if (mClear == null || mStart == null || mPause == null || mRetry == null) return;
 
         mAdapter.setClearButton(mClear);
-        mAdapter.setMasterButtons(mStart, mPause);
+        mAdapter.setMasterButtons(mStart, mPause, mRetry);
+        mAdapter.setUtilityButtons(mDeleteErrored, mDeleteFetches);
     }
 
     private void recoverMission(@NonNull DownloadMission mission) {

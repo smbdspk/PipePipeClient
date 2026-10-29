@@ -65,6 +65,7 @@ import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.FinishedMission;
 import us.shandian.giga.get.Mission;
 import us.shandian.giga.get.MissionRecoveryInfo;
+import us.shandian.giga.get.PendingFetchMission;
 import us.shandian.giga.get.SabrDownloadException;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
 import us.shandian.giga.service.DownloadManager;
@@ -121,6 +122,9 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
     private MenuItem mClear;
     private MenuItem mStartButton;
     private MenuItem mPauseButton;
+    private MenuItem mRetryButton;
+    private MenuItem mDeleteErrored;
+    private MenuItem mDeleteFetches;
     private final View mEmptyMessage;
     private RecoverHelper mRecover;
     private final View mView;
@@ -208,19 +212,29 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         ViewHolderItem h = (ViewHolderItem) view;
         h.item = item;
 
-        Utility.FileType type = Utility.getFileType(item.mission.kind, item.mission.storage.getName());
-
-        h.icon.setImageResource(Utility.getIconForFileType(type));
-        h.name.setText(item.mission.storage.getName());
-
-        h.progress.setColors(Utility.getBackgroundForFileType(mContext, type), Utility.getForegroundForFileType(mContext, type));
+        bindMissionAppearance(h);
 
         if (h.item.mission instanceof DownloadMission) {
             DownloadMission mission = (DownloadMission) item.mission;
             String length = Utility.formatBytes(mission.getLength());
             if (mission.running && !mission.isPsRunning()) length += " --.- kB/s";
 
-            h.size.setText(length);
+            if (mission instanceof PendingFetchMission && ((PendingFetchMission) mission).pendingFetch) {
+                h.size.setText(length);
+                if (mission.errCode != ERROR_NOTHING) {
+                    h.status.setText(R.string.bulk_download_fetch_error);
+                    h.progress.setMarquee(false);
+                } else if (mission.running) {
+                    h.status.setText(R.string.bulk_download_fetching);
+                    h.progress.setMarquee(true);
+                } else {
+                    h.status.setText(mission.enqueued ? R.string.queued : R.string.paused);
+                    h.progress.setMarquee(false);
+                }
+                h.date.setText("");
+            } else {
+                h.size.setText(length);
+            }
             h.pause.setTitle(mission.unknownLength ? R.string.stop : R.string.pause);
             updateProgress(h);
             mPendingDownloadsItems.add(h);
@@ -253,6 +267,23 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         if (h == null || h.item == null || h.item.mission instanceof FinishedMission) return;
 
         DownloadMission mission = (DownloadMission) h.item.mission;
+
+        if (mission instanceof PendingFetchMission && ((PendingFetchMission) mission).pendingFetch) {
+            String length = Utility.formatBytes(mission.getLength());
+            h.size.setText(length);
+            if (mission.errCode != ERROR_NOTHING) {
+                h.status.setText(R.string.bulk_download_fetch_error);
+                h.progress.setMarquee(false);
+            } else if (mission.running) {
+                h.status.setText(R.string.bulk_download_fetching);
+                h.progress.setMarquee(true);
+            } else {
+                h.status.setText(mission.enqueued ? R.string.queued : R.string.paused);
+                h.progress.setMarquee(false);
+            }
+            return;
+        }
+
         double done = mission.done;
         long length = mission.getLength();
         long now = System.currentTimeMillis();
@@ -457,13 +488,50 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         return null;
     }
 
+    private void bindMissionAppearance(@NonNull ViewHolderItem h) {
+        if (h.item == null || h.item.mission == null || h.item.mission.storage == null) return;
+        Mission mission = h.item.mission;
+        String storageName = mission.storage.getName();
+        Utility.FileType type = Utility.getFileType(mission.kind, storageName);
+
+        h.icon.setImageResource(Utility.getIconForFileType(type));
+        if (storageName != null && !storageName.contentEquals(h.name.getText())) {
+            h.name.setText(storageName);
+        }
+
+        if (mission instanceof PendingFetchMission
+                && ((PendingFetchMission) mission).pendingFetch) {
+            h.progress.setColors(ContextCompat.getColor(mContext, R.color.placeholder_background),
+                    ContextCompat.getColor(mContext, R.color.placeholder_foreground));
+        } else {
+            h.progress.setColors(Utility.getBackgroundForFileType(mContext, type),
+                    Utility.getForegroundForFileType(mContext, type));
+        }
+    }
+
     @Override
     public boolean handleMessage(@NonNull Message msg) {
         if (mStartButton != null && mPauseButton != null) {
             checkMasterButtonsVisibility();
         }
 
+        if (msg.what == DownloadManagerService.MESSAGE_QUEUE_UPDATED) {
+            applyChanges();
+            for (ViewHolderItem h : mPendingDownloadsItems) {
+                bindMissionAppearance(h);
+                updateProgress(h);
+                if (!((DownloadMission) h.item.mission).running) {
+                    h.resetSpeedMeasure();
+                }
+            }
+            if (mStartButton != null && mPauseButton != null) {
+                checkMasterButtonsVisibility();
+            }
+            return true;
+        }
+
         switch (msg.what) {
+            case DownloadManagerService.MESSAGE_RUNNING:
             case DownloadManagerService.MESSAGE_ERROR:
             case DownloadManagerService.MESSAGE_FINISHED:
             case DownloadManagerService.MESSAGE_DELETED:
@@ -482,6 +550,9 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                 // DownloadManager should mark the download as finished
                 applyChanges();
                 return true;
+            case DownloadManagerService.MESSAGE_RUNNING:
+                bindMissionAppearance(h);
+                break;
         }
 
         updateProgress(h);
@@ -555,6 +626,12 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                     msgEx = mission.errObject.getMessage();
                 }
                 break;
+            case PendingFetchMission.ERROR_FETCH_FAILED:
+                msg = R.string.bulk_download_fetch_error;
+                break;
+            case PendingFetchMission.ERROR_NO_STORAGE:
+                msg = R.string.bulk_download_no_folder;
+                break;
             default:
                 if (mission.errCode >= 100 && mission.errCode < 600) {
                     msgEx = "HTTP " + mission.errCode;
@@ -569,10 +646,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
         AlertDialog.Builder builder = new AlertDialog.Builder(mContext);
 
-        if (msgEx != null)
+        if (msgEx != null) {
             builder.setMessage(msgEx);
-        else
+        } else if (mission.errObject != null && mission.errObject.getMessage() != null && !mission.errObject.getMessage().isEmpty()) {
+            builder.setMessage(mContext.getString(msg) + "\n\n" + mission.errObject.getMessage());
+        } else {
             builder.setMessage(msg);
+        }
 
         // add report button for non-HTTP errors (range 100-599)
         if (mission.errObject != null && (mission.errCode < 100 || mission.errCode >= 600)) {
@@ -695,9 +775,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
             if (id == R.id.start) {
                 h.status.setText(UNDEFINED_PROGRESS);
                 mDownloadManager.resumeMission(mission);
+                updateProgress(h);
+                checkMasterButtonsVisibility();
                 return true;
             } else if (id == R.id.pause) {
                 mDownloadManager.pauseMission(mission);
+                updateProgress(h);
+                checkMasterButtonsVisibility();
                 return true;
             } else if (id == R.id.error_message_view) {
                 showError(mission);
@@ -707,16 +791,48 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                 h.queue.setChecked(flag);
                 mission.setEnqueued(flag);
                 updateProgress(h);
+                checkMasterButtonsVisibility();
                 return true;
             } else if (id == R.id.retry) {
+                boolean deadUrls = mission.urls == null || mission.urls.length == 0;
                 if (mission.isPsRunning()) {
                     mission.psContinue(true);
+                } else if (mission instanceof PendingFetchMission
+                        && (((PendingFetchMission) mission).pendingFetch
+                        || mission.done == 0
+                        || mission.isPsFailed()
+                        || deadUrls
+                        || mission.hasInvalidStorage())) {
+                    ((PendingFetchMission) mission).refetch();
+                    bindMissionAppearance(h);
+                    updateProgress(h);
+                    checkMasterButtonsVisibility();
                 } else {
-                    mDownloadManager.tryRecover(mission);
-                    if (mission.storage.isInvalid())
-                        mRecover.tryRecover(mission);
-                    else
-                        recoverMission(mission);
+                    String missionTag = mission.storage != null && mission.storage.getTag() != null
+                            ? mission.storage.getTag()
+                            : (mission.kind == 'a' ? DownloadManager.TAG_AUDIO : DownloadManager.TAG_VIDEO);
+                    boolean canConvertToPfm = mission.source != null
+                            && !mission.source.isEmpty()
+                            && mDownloadManager.getMainStorage(missionTag) != null;
+                    if (canConvertToPfm && (mission.done == 0 || mission.isPsFailed() || deadUrls)) {
+                        mDownloadManager.convertToPendingFetchMission(mission);
+                        applyChanges();
+                        checkMasterButtonsVisibility();
+                    } else {
+                        boolean existedBefore = mission.storage != null
+                                && !mission.storage.isInvalid()
+                                && mission.storage.existsAsFile();
+                        mDownloadManager.tryRecover(mission);
+                        if (mission.storage == null || mission.storage.isInvalid()) {
+                            mRecover.tryRecover(mission);
+                        } else {
+                            if (!existedBefore) {
+                                mission.done = 0;
+                                mission.resetState(true, true, DownloadMission.ERROR_NOTHING);
+                            }
+                            recoverMission(mission);
+                        }
+                    }
                 }
                 return true;
             } else if (id == R.id.cancel) {
@@ -775,11 +891,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
 
     public void applyChanges() {
         mIterator.start();
-        DiffUtil.calculateDiff(mIterator, true).dispatchUpdatesTo(this);
+        DiffUtil.calculateDiff(mIterator, false).dispatchUpdatesTo(this);
         mIterator.end();
 
         checkEmptyMessageVisibility();
         if (mClear != null) mClear.setVisible(mIterator.hasFinishedMissions());
+        if (mDeleteErrored != null) mDeleteErrored.setVisible(mIterator.hasErrorMissions());
+        if (mDeleteFetches != null) mDeleteFetches.setVisible(mIterator.hasPendingFetchMissions());
     }
 
     public void forceUpdate() {
@@ -804,13 +922,28 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         mClear = clearButton;
     }
 
-    public void setMasterButtons(MenuItem startButton, MenuItem pauseButton) {
-        boolean init = mStartButton == null || mPauseButton == null;
+    public void setMasterButtons(MenuItem startButton, MenuItem pauseButton, MenuItem retryButton) {
+        boolean init = mStartButton == null || mPauseButton == null || mRetryButton == null;
 
         mStartButton = startButton;
         mPauseButton = pauseButton;
+        mRetryButton = retryButton;
 
         if (init) checkMasterButtonsVisibility();
+    }
+
+    public void setUtilityButtons(MenuItem deleteErrored, MenuItem deleteFetches) {
+        boolean init = mDeleteErrored == null || mDeleteFetches == null;
+
+        if (mDeleteErrored == null && deleteErrored != null) {
+            deleteErrored.setVisible(mIterator.hasErrorMissions());
+        }
+        if (mDeleteFetches == null && deleteFetches != null) {
+            deleteFetches.setVisible(mIterator.hasPendingFetchMissions());
+        }
+
+        mDeleteErrored = deleteErrored;
+        mDeleteFetches = deleteFetches;
     }
 
     private void checkEmptyMessageVisibility() {
@@ -823,10 +956,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         Log.d(TAG, "checkMasterButtonsVisibility() running=" + state[0] + " paused=" + state[1]);
         setButtonVisible(mPauseButton, state[0]);
         setButtonVisible(mStartButton, state[1]);
+        setButtonVisible(mRetryButton, mIterator.hasErrorMissions());
+        setButtonVisible(mDeleteErrored, mIterator.hasErrorMissions());
+        setButtonVisible(mDeleteFetches, mIterator.hasPendingFetchMissions());
     }
 
     private static void setButtonVisible(MenuItem button, boolean visible) {
-        if (button.isVisible() != visible)
+        if (button != null && button.isVisible() != visible)
             button.setVisible(visible);
     }
 
@@ -859,13 +995,15 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
         if (h == null) return;
 
         mission.errObject = null;
-        mission.resetState(true, false, DownloadMission.ERROR_NOTHING);
+        mission.errCode = DownloadMission.ERROR_NOTHING;
 
         h.status.setText(UNDEFINED_PROGRESS);
         h.size.setText(Utility.formatBytes(mission.getLength()));
         h.progress.setMarquee(true);
 
         mDownloadManager.resumeMission(mission);
+        updateProgress(h);
+        checkMasterButtonsVisibility();
     }
 
     private void updater() {
@@ -979,6 +1117,13 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                     retry.setVisible(true);
                     delete.setVisible(true);
                     showError.setVisible(true);
+                } else if (mission instanceof PendingFetchMission
+                        && ((PendingFetchMission) mission).pendingFetch) {
+                    retry.setVisible(true);
+                    delete.setVisible(true);
+                    if (mission.errCode != ERROR_NOTHING) {
+                        showError.setVisible(true);
+                    }
                 } else if (mission.isPsRunning()) {
                     switch (mission.errCode) {
                         case ERROR_INSUFFICIENT_STORAGE:
@@ -994,6 +1139,7 @@ public class MissionAdapter extends Adapter<ViewHolder> implements Handler.Callb
                     } else {
                         if (mission.errCode != ERROR_NOTHING) {
                             showError.setVisible(true);
+                            retry.setVisible(true);
                         }
 
                         queue.setChecked(mission.enqueued);

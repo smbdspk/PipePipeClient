@@ -555,6 +555,10 @@
 <string name="overwrite_unrelated_warning">A file with this name already exists</string>
 <string name="overwrite_finished_warning">A downloaded file with this name already exists</string>
 <string name="overwrite_failed">cannot overwrite the file</string>
+<string name="bulk_download_no_folder">Download folder not set \u2014 please configure it in settings</string>
+<string name="bulk_download_fetching">Fetching\u2026</string>
+<string name="bulk_download_fetch_error">Fetch failed</string>
+<string name="bulk_download_skipped">Skipped %1$d downloads (file already exists)</string>
 <string name="download_already_running">There is a download in progress with this name</string>
 <string name="download_already_pending">There is a pending download with this name</string>
 <!-- message dialog about download error -->
@@ -600,6 +604,7 @@
 <string name="enable_queue_limit_desc">One download will run at the same time</string>
 <string name="start_downloads">Start downloads</string>
 <string name="pause_downloads">Pause downloads</string>
+<string name="retry_downloads">Retry all errors</string>
 <string name="downloads_storage_ask_title">Ask where to download</string>
 <string name="downloads_storage_ask_summary">You will be asked where to save each download.\nEnable the system folder picker (SAF) if you want to download to an external SD card</string>
 <string name="downloads_storage_ask_summary_no_saf_notice">You will be asked where to save each download</string>
@@ -1250,4 +1255,7 @@ Only add repositories you trust.</string>
 <string name="plugins_show_nsfw_title">Show NSFW plugins</string>
 <string name="plugins_show_nsfw_summary">List plugins marked as NSFW in the available plugins</string>
 <string name="plugin_installed_other_publisher">Published by someone else. Uninstall %1$s first to install this one.</string>
+<!-- Bulk download -->
+<string name="delete_errored_missions">Delete errored</string>
+<string name="delete_fetch_missions">Delete fetches</string>
 </resources>

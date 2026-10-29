@@ -66,6 +66,15 @@ public final class AudioStreamSelector {
         return -1;
     }
 
+    public static int getHighestQualityAudioIndex(@Nullable final MediaFormat format,
+                                                  @Nullable final List<AudioStream> audioStreams) {
+        final AudioStream best = getHighestQualityAudioStream(format, audioStreams);
+        if (best == null || audioStreams == null) {
+            return -1;
+        }
+        return audioStreams.indexOf(best);
+    }
+
     @Nullable
     private static AudioStream getHighestQualityAudioStream(@Nullable final MediaFormat format,
                                                             @Nullable final List<AudioStream> audioStreams) {

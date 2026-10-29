@@ -53,6 +53,33 @@ public final class VideoStreamSelector {
     }
 
     /**
+     * Resolves a video stream index from the fixed quality labels used by
+     * {@code BulkDownloadDialog}.
+     * <ul>
+     *   <li>"Best" → highest available stream in {@code videoStreams}</li>
+     *   <li>Any other label (e.g. "720p") → exact match first, then highest stream strictly
+     *       below the requested resolution as the fallback</li>
+     * </ul>
+     *
+     * @param context      Android context (used for "Best" resolution key lookup)
+     * @param qualityLabel one of "Best", "1080p", "720p", "480p", "360p", "240p"
+     * @param videoStreams the already-filtered and sorted list of available video streams
+     * @return the index into {@code videoStreams}, or -1 if the list is empty
+     */
+    public static int getDownloadResolutionIndex(@NonNull final Context context,
+                                                 @NonNull final String qualityLabel,
+                                                 @Nullable final List<VideoStream> videoStreams) {
+        if (videoStreams == null || videoStreams.isEmpty()) {
+            return -1;
+        }
+        final String bestKey = context.getString(R.string.best_resolution_key);
+        if ("Best".equals(qualityLabel)) {
+            return getDefaultResolutionIndex(bestKey, bestKey, videoStreams);
+        }
+        return getDefaultResolutionIndex(qualityLabel, bestKey, videoStreams);
+    }
+
+    /**
      * Finds the stream matching a quality selected on a previous video.
      *
      * <p>Stream list positions are not stable between videos. Match the selected resolution and

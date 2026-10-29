@@ -12,6 +12,7 @@ import java.util.Objects;
 
 import us.shandian.giga.get.DownloadMission.Block;
 import us.shandian.giga.get.DownloadMission.HttpError;
+import us.shandian.giga.util.Utility;
 
 import static org.schabi.newpipe.BuildConfig.DEBUG;
 import static us.shandian.giga.get.DownloadMission.ERROR_HTTP_AUTH;
@@ -84,6 +85,15 @@ public class DownloadRunnable extends Thread {
                 mConn = mMission.openConnection(false, start, end);
                 mMission.establishConnection(mId, mConn);
 
+                String contentType = mConn.getContentType();
+                if (Utility.isInvalidContentType(contentType)) {
+                    f.close();
+                    if (mId == 1) {
+                        mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                    }
+                    return;
+                }
+
                 // check if the download can be resumed
                 if (mConn.getResponseCode() == 416) {
                     if (block.done > 0) {
@@ -132,11 +142,9 @@ public class DownloadRunnable extends Thread {
                 if (!mMission.running || e instanceof ClosedByInterruptException) break;
 
                 if (e instanceof HttpError && (((HttpError) e).statusCode == ERROR_HTTP_FORBIDDEN || ((HttpError) e).statusCode == ERROR_HTTP_AUTH)) {
-                    // for youtube streams. The url has expired, recover
                     f.close();
-
-                    if (mId == 1) {
-                        // only the first thread will execute the recovery procedure
+                    if (!mMission.recoveryTriggered) {
+                        mMission.recoveryTriggered = true;
                         mMission.doRecover(ERROR_HTTP_FORBIDDEN);
                     }
                     return;

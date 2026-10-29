@@ -57,6 +57,20 @@ public class DownloadInitializer extends Thread {
                     for (int i = 0; i < mMission.urls.length && mMission.running; i++) {
                         mConn = mMission.openConnection(i, true, 0, 0);
                         mMission.establishConnection(mId, mConn);
+
+                        if (i == 0) {
+                            String ct = mConn.getContentType();
+                            if (Utility.isInvalidContentType(ct)) {
+                                mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                                return;
+                            }
+                            long cl = Utility.getTotalContentLength(mConn);
+                            if (cl == -1 && mConn.getResponseCode() == 200) {
+                                mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                                return;
+                            }
+                        }
+
                         dispose();
 
                         if (Thread.interrupted()) return;
@@ -87,6 +101,18 @@ public class DownloadInitializer extends Thread {
                     // ask for the current resource length
                     mConn = mMission.openConnection(true, 0, 0);
                     mMission.establishConnection(mId, mConn);
+
+                    String ct = mConn.getContentType();
+                    if (Utility.isInvalidContentType(ct)) {
+                        mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                        return;
+                    }
+                    long cl = Utility.getTotalContentLength(mConn);
+                    if (cl == -1 && mConn.getResponseCode() == 200) {
+                        mMission.doRecover(DownloadMission.ERROR_RESOURCE_GONE);
+                        return;
+                    }
+
                     dispose();
 
                     if (!mMission.running || Thread.interrupted()) return;
