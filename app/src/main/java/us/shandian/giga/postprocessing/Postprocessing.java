@@ -192,8 +192,11 @@ public abstract class Postprocessing implements Serializable {
                             result = process(target.storage.source, target.context, out, sources);
                         }
 
-                        if (result == OK_RESULT)
+
+                        if (result == OK_RESULT
+                                && !Objects.equals(target.psAlgorithm.name, BILIBILI_MUXER)) {
                             finalLength = out.finalizeFile();
+                        }
                     }
                 } else {
                     result = OK_RESULT;

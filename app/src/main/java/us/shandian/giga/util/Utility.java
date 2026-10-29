@@ -329,6 +329,15 @@ public class Utility {
 
         return str + pad(s);
     }
+
+    public static boolean isInvalidContentType(String contentType) {
+        if (contentType == null) return false;
+        String lower = contentType.toLowerCase();
+        return lower.startsWith("text/html")
+                || lower.startsWith("application/json")
+                || lower.startsWith("text/plain");
+    }
+
     /**
      * Applies the headers a stream declares ({@code Stream#getRequestHeaders()}) on top of the
      * ones already set. {@code Range} and {@code Accept-Encoding} are left alone, the downloader
@@ -382,19 +391,21 @@ public class Utility {
         final Pattern tempName = Pattern.compile(Pattern.quote(name.replace(".mp4", ""))
                 + "\\.tmp(\\.mp4)?( \\(\\d+\\))?");
         if (storedFileHelper.docTree == null) {
-            try {
-                // NOTE: ioFile is the file itself, its parent is the searched directory
-                final File[] files = storedFileHelper.ioFile.getParentFile().listFiles();
-                if (files != null) {
-                    for (final File file : files) {
-                        if (tempName.matcher(file.getName()).matches()) {
-                            //noinspection ResultOfMethodCallIgnored
-                            file.delete();
+            if (storedFileHelper.ioFile != null && storedFileHelper.ioFile.getParentFile() != null) {
+                try {
+                    // NOTE: ioFile is the file itself, its parent is the searched directory
+                    final File[] files = storedFileHelper.ioFile.getParentFile().listFiles();
+                    if (files != null) {
+                        for (final File file : files) {
+                            if (tempName.matcher(file.getName()).matches()) {
+                                //noinspection ResultOfMethodCallIgnored
+                                file.delete();
+                            }
                         }
                     }
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
             }
             return;
         }
