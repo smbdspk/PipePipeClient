@@ -123,6 +123,10 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     namespace 'org.schabi.newpipe'
 }
 

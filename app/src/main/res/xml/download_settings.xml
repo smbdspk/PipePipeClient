@@ -34,6 +34,14 @@
         app:singleLineTitle="false"
         app:iconSpaceReserved="false" />
 
+    <EditTextPreference
+        android:defaultValue="@string/download_filename_template_default_value"
+        android:key="@string/download_filename_template_key"
+        app:useSimpleSummaryProvider="true"
+        android:title="@string/download_filename_template_title"
+        app:singleLineTitle="false"
+        app:iconSpaceReserved="false" />
+
     <ListPreference
             android:defaultValue="@string/default_file_charset_value"
             android:entries="@array/settings_filename_charset_name"

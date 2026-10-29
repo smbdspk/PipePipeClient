@@ -391,6 +391,7 @@
     <string name="storage_use_saf">storage_use_saf</string>
 
     <!-- FileName Downloads  -->
+    <string name="download_filename_template_key">download_filename_template</string>
     <string name="settings_file_charset_key">file_rename_charset</string>
     <string name="settings_file_replacement_character_key">file_replacement_character</string>
     <string name="settings_file_replacement_character_default_value">_</string>
