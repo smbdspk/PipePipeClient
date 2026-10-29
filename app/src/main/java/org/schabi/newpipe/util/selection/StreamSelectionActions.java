@@ -58,7 +58,7 @@ public final class StreamSelectionActions {
             NavigationHelper.playOnBackgroundPlayer(fragment.requireContext(),
                     new SinglePlayQueue(infoItems, 0), false);
         } else {
-            SelectionDownloadHelper.showDownloadDialog(fragment.requireContext(), infoItems);
+            SelectionDownloadHelper.showDownloadDialog(fragment, infoItems);
         }
         return true;
     }
